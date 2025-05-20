@@ -1,16 +1,17 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
-import shutil
 import time
 import zipfile
 from datetime import datetime
+
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
 # Initialize rich console
 console = Console()
@@ -29,22 +30,28 @@ DEFAULT_CONFIG = {
     "AUTO_BACKUP_INTERVAL": "720",  # 12 hours in minutes
 }
 
+
 # === Utility Functions ===
 
 def print_header(title):
     console.print(Panel(f"[bold]{title}[/bold]", expand=False, border_style="dim"))
 
+
 def print_success(message):
     console.print(f"[green]✓ {message}[/green]")
+
 
 def print_warning(message):
     console.print(f"[yellow]! {message}[/yellow]")
 
+
 def print_error(message):
     console.print(f"[red]× {message}[/red]")
 
+
 def print_info(message):
     console.print(message)
+
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
@@ -58,10 +65,12 @@ def load_config():
         sys.exit(1)
     return cfg
 
+
 def save_config(config):
     with open(CONFIG_PATH, 'w') as f:
         json.dump(config, f, indent=4)
     print_success(f"Config saved to {CONFIG_PATH}")
+
 
 def run_command(command, cwd=None, silent=False):
     try:
@@ -78,9 +87,11 @@ def run_command(command, cwd=None, silent=False):
         print_error(f"Exception running command: {e}")
         return False
 
+
 def screen_session_exists(screen_name):
     result = subprocess.run(f"screen -ls | grep -q '\\.{screen_name}'", shell=True)
     return result.returncode == 0
+
 
 def validate_config(cfg):
     # Check if directories exist
@@ -100,11 +111,13 @@ def validate_config(cfg):
 
     return True
 
+
 def start_server(cfg, gui=False, ram=None):
-    print_header("Starting Minecraft Server")
     if screen_session_exists(cfg["SCREEN_NAME"]):
         print_warning("Server is already running. Use 'status' to check.")
         return
+
+    print_header("Starting Minecraft Server")
 
     # Validate config before starting
     if not validate_config(cfg):
@@ -128,6 +141,7 @@ def start_server(cfg, gui=False, ram=None):
         print_success("Server started.")
     else:
         print_error("Failed to start server.")
+
 
 def stop_server(cfg):
     print_header("Stopping Minecraft Server")
@@ -159,10 +173,12 @@ def stop_server(cfg):
     else:
         print_error("Failed to send stop signal.")
 
+
 def restart_server(cfg):
     print_header("Restarting Minecraft Server")
     stop_server(cfg)
     start_server(cfg)
+
 
 def backup_world(cfg, include_list=None, exclude_list=None, compression_level=None):
     print_header("Creating Full Server Backup")
@@ -237,7 +253,7 @@ def backup_world(cfg, include_list=None, exclude_list=None, compression_level=No
             progress.update(task, advance=1)
 
         print_success(f"Full server backup saved as {backup_path}.zip")
-        print_info(f"Backup size: {os.path.getsize(f'{backup_path}.zip') / (1024*1024):.2f} MB")
+        print_info(f"Backup size: {os.path.getsize(f'{backup_path}.zip') / (1024 * 1024):.2f} MB")
 
         # Rotate old backups
         max_backups = int(cfg.get("MAX_BACKUPS", 5))
@@ -251,6 +267,7 @@ def backup_world(cfg, include_list=None, exclude_list=None, compression_level=No
 
     except Exception as e:
         print_error(f"Backup failed: {e}")
+
 
 def show_logs(cfg, lines=None):
     print_header("Latest Server Logs")
@@ -273,6 +290,7 @@ def show_logs(cfg, lines=None):
 
     console.print(Panel.fit(log_content, title="Server Log", border_style="dim blue"))
 
+
 def show_recent_logs(cfg, lines=20):
     log_path = os.path.join(cfg["SERVER_DIR"], "logs", "latest.log")
     if not os.path.exists(log_path):
@@ -289,6 +307,7 @@ def show_recent_logs(cfg, lines=20):
         else:
             console.print(line.strip())
 
+
 def send_command(cfg, cmd):
     print_header("Sending Command")
     if not screen_session_exists(cfg["SCREEN_NAME"]):
@@ -300,6 +319,7 @@ def send_command(cfg, cmd):
     if success:
         print_success(f"Sent: {cmd}")
     return success
+
 
 def show_status(cfg):
     print_header("Server Status")
@@ -334,6 +354,7 @@ def show_status(cfg):
 
     console.print(table)
 
+
 def setup_config():
     print_header("Setup Configuration")
 
@@ -365,6 +386,7 @@ def setup_config():
 
     save_config(config)
 
+
 def watch_server(cfg):
     print_header("Starting Server Watchdog")
     check_interval = int(cfg.get("WATCHDOG_INTERVAL", 60))
@@ -387,6 +409,7 @@ def watch_server(cfg):
                 time.sleep(check_interval)
     except KeyboardInterrupt:
         print_info("\nWatchdog stopped.")
+
 
 def start_scheduled_backups(cfg):
     print_header("Starting Scheduled Backups")
@@ -412,6 +435,7 @@ def start_scheduled_backups(cfg):
     except KeyboardInterrupt:
         print_info("\nScheduled backups stopped.")
 
+
 def list_players(cfg):
     print_header("Online Players")
     if not screen_session_exists(cfg["SCREEN_NAME"]):
@@ -422,6 +446,7 @@ def list_players(cfg):
     # Wait for command to execute and return result
     time.sleep(1)
     show_recent_logs(cfg, lines=3)
+
 
 def show_server_stats(cfg):
     print_header("Server Statistics")
@@ -462,6 +487,7 @@ def show_server_stats(cfg):
     time.sleep(1)
     show_recent_logs(cfg, lines=3)
 
+
 def print_caffeinate_help():
     print_header("How to Prevent System Sleep")
 
@@ -483,6 +509,7 @@ def print_caffeinate_help():
         border_style="dim blue"
     )
     console.print(panel)
+
 
 # === Main Function ===
 
@@ -598,6 +625,7 @@ def main():
             border_style="dim blue"
         ))
         parser.print_help()
+
 
 if __name__ == "__main__":
     main()
