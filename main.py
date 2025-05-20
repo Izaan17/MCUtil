@@ -5,6 +5,7 @@ import subprocess
 import sys
 import shutil
 import time
+import zipfile
 from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
@@ -31,16 +32,16 @@ DEFAULT_CONFIG = {
 # === Utility Functions ===
 
 def print_header(title):
-    console.print(Panel(f"[bold]{title}[/bold]", expand=False))
+    console.print(Panel(f"[bold]{title}[/bold]", expand=False, border_style="dim"))
 
 def print_success(message):
-    console.print(f"[bold green]✅ {message}[/bold green]")
+    console.print(f"[green]✓ {message}[/green]")
 
 def print_warning(message):
-    console.print(f"[bold yellow]⚠️ {message}[/bold yellow]")
+    console.print(f"[yellow]! {message}[/yellow]")
 
 def print_error(message):
-    console.print(f"[bold red]❌ {message}[/bold red]")
+    console.print(f"[red]× {message}[/red]")
 
 def print_info(message):
     console.print(message)
@@ -99,8 +100,8 @@ def validate_config(cfg):
 
     return True
 
-def start_server(cfg):
-    print_header("🟢 Starting Minecraft Server")
+def start_server(cfg, gui=False, ram=None):
+    print_header("Starting Minecraft Server")
     if screen_session_exists(cfg["SCREEN_NAME"]):
         print_warning("Server is already running. Use 'status' to check.")
         return
@@ -110,7 +111,18 @@ def start_server(cfg):
         print_warning("Configuration validation failed. Please check your settings.")
         return
 
-    cmd = f'screen -dmS {cfg["SCREEN_NAME"]} java {cfg["JAVA_OPTIONS"]} -jar {cfg["SERVER_JAR"]} nogui'
+    # Determine Java options - use override if provided
+    java_options = cfg["JAVA_OPTIONS"]
+    if ram:
+        java_options = f"-Xmx{ram} -Xms{ram}"
+        print_info(f"Using RAM override: {ram}")
+
+    # Determine GUI mode
+    gui_param = "" if gui else "nogui"
+    if gui:
+        print_info("Starting server with GUI enabled")
+
+    cmd = f'screen -dmS {cfg["SCREEN_NAME"]} java {java_options} -jar {cfg["SERVER_JAR"]} {gui_param}'
 
     if run_command(cmd, cwd=cfg["SERVER_DIR"]):
         print_success("Server started.")
@@ -118,7 +130,7 @@ def start_server(cfg):
         print_error("Failed to start server.")
 
 def stop_server(cfg):
-    print_header("🔴 Stopping Minecraft Server")
+    print_header("Stopping Minecraft Server")
     if not screen_session_exists(cfg["SCREEN_NAME"]):
         print_warning("Server is not running.")
         return
@@ -130,7 +142,7 @@ def stop_server(cfg):
         # Show progress with rich
         with Progress(
                 SpinnerColumn(),
-                TextColumn("[bold green]Waiting for server to stop...[/bold green]"),
+                TextColumn("[green]Waiting for server to stop...[/green]"),
                 console=console
         ) as progress:
             task = progress.add_task("Stopping...", total=30)
@@ -148,22 +160,34 @@ def stop_server(cfg):
         print_error("Failed to send stop signal.")
 
 def restart_server(cfg):
-    print_header("🔄 Restarting Minecraft Server")
+    print_header("Restarting Minecraft Server")
     stop_server(cfg)
     start_server(cfg)
 
-def backup_world(cfg):
-    print_header("💾 Creating Full Server Backup")
+def backup_world(cfg, include_list=None, exclude_list=None, compression_level=None):
+    print_header("Creating Full Server Backup")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_name = f"server_backup_{timestamp}"
     backup_path = os.path.join(cfg["BACKUP_DIR"], backup_name)
 
-    # List of folders and files you want to include
-    include_items = [
+    # Default list of folders and files to include
+    default_items = [
         "world", "world_nether", "world_the_end",
         "server.properties", "banned-ips.json", "banned-players.json",
         "ops.json", "whitelist.json", "mods", "config", "scripts", "plugins"
     ]
+
+    # Use custom include list if provided
+    include_items = include_list.split(',') if include_list else default_items
+
+    # Apply exclusions if provided
+    if exclude_list:
+        exclude_items = exclude_list.split(',')
+        include_items = [item for item in include_items if item not in exclude_items]
+        print_info(f"Excluding items: {exclude_list}")
+
+    # Display what we're backing up
+    print_info(f"Backing up: {', '.join(include_items)}")
 
     try:
         # Ensure backup directory exists
@@ -191,7 +215,20 @@ def backup_world(cfg):
 
             # Create zip file from temp dir
             progress.update(task, description="[yellow]Creating ZIP archive...")
-            shutil.make_archive(backup_path, 'zip', temp_dir)
+
+            # Set compression level if provided
+            zip_options = {}
+            if compression_level is not None:
+                try:
+                    level = int(compression_level)
+                    if 0 <= level <= 9:
+                        zip_options['compression'] = zipfile.ZIP_DEFLATED
+                        zip_options['compresslevel'] = level
+                        print_info(f"Using compression level: {level}")
+                except ValueError:
+                    print_warning(f"Invalid compression level '{compression_level}', using default")
+
+            shutil.make_archive(backup_path, 'zip', temp_dir, **zip_options)
             progress.update(task, advance=1)
 
             # Clean up
@@ -200,6 +237,7 @@ def backup_world(cfg):
             progress.update(task, advance=1)
 
         print_success(f"Full server backup saved as {backup_path}.zip")
+        print_info(f"Backup size: {os.path.getsize(f'{backup_path}.zip') / (1024*1024):.2f} MB")
 
         # Rotate old backups
         max_backups = int(cfg.get("MAX_BACKUPS", 5))
@@ -209,22 +247,31 @@ def backup_world(cfg):
             while len(backups) > max_backups:
                 oldest = backups.pop(0)
                 os.remove(oldest)
-                print_info(f"🗑️  Removed old backup: {os.path.basename(oldest)}")
+                print_info(f"Removed old backup: {os.path.basename(oldest)}")
 
     except Exception as e:
         print_error(f"Backup failed: {e}")
 
-def show_logs(cfg):
-    print_header("📜 Latest Server Logs")
+def show_logs(cfg, lines=None):
+    print_header("Latest Server Logs")
     log_path = os.path.join(cfg["SERVER_DIR"], "logs", "latest.log")
     if not os.path.exists(log_path):
         print_error("Log file not found.")
         return
 
+    if lines:
+        # If lines parameter is provided, show that many lines
+        try:
+            line_count = int(lines)
+            show_recent_logs(cfg, line_count)
+            return
+        except ValueError:
+            print_warning(f"Invalid line count: {lines}. Showing full log.")
+
     with open(log_path, 'r') as f:
         log_content = f.read()
 
-    console.print(Panel.fit(log_content, title="Server Log", border_style="blue"))
+    console.print(Panel.fit(log_content, title="Server Log", border_style="dim blue"))
 
 def show_recent_logs(cfg, lines=20):
     log_path = os.path.join(cfg["SERVER_DIR"], "logs", "latest.log")
@@ -238,12 +285,12 @@ def show_recent_logs(cfg, lines=20):
 
     for line in recent:
         if "ERROR" in line or "WARN" in line:
-            console.print(line.strip(), style="bold red")
+            console.print(line.strip(), style="red")
         else:
             console.print(line.strip())
 
 def send_command(cfg, cmd):
-    print_header("📡 Sending Command")
+    print_header("Sending Command")
     if not screen_session_exists(cfg["SCREEN_NAME"]):
         print_warning("Server is not running.")
         return False
@@ -255,14 +302,14 @@ def send_command(cfg, cmd):
     return success
 
 def show_status(cfg):
-    print_header("📊 Server Status")
+    print_header("Server Status")
 
     table = Table(title="Minecraft Server Status")
-    table.add_column("Parameter", style="cyan")
+    table.add_column("Parameter", style="blue")
     table.add_column("Value", style="green")
 
     if screen_session_exists(cfg["SCREEN_NAME"]):
-        table.add_row("Status", "[bold green]RUNNING[/bold green]")
+        table.add_row("Status", "[green]RUNNING[/green]")
         table.add_row("Screen Name", cfg["SCREEN_NAME"])
 
         # Try to get uptime
@@ -283,12 +330,12 @@ def show_status(cfg):
         except:
             pass
     else:
-        table.add_row("Status", "[bold red]STOPPED[/bold red]")
+        table.add_row("Status", "[red]STOPPED[/red]")
 
     console.print(table)
 
 def setup_config():
-    print_header("🛠️  Setup Configuration")
+    print_header("Setup Configuration")
 
     # First check if config exists, load it as defaults
     existing_config = {}
@@ -300,7 +347,7 @@ def setup_config():
     for key, default in DEFAULT_CONFIG.items():
         current = existing_config.get(key, default)
 
-        console.print(f"[cyan]{key}[/cyan] [[yellow]{current}[/yellow]]: ", end="")
+        console.print(f"[blue]{key}[/blue] [[yellow]{current}[/yellow]]: ", end="")
         value = input().strip()
         config[key] = value or current
 
@@ -319,7 +366,7 @@ def setup_config():
     save_config(config)
 
 def watch_server(cfg):
-    print_header("👀 Starting Server Watchdog")
+    print_header("Starting Server Watchdog")
     check_interval = int(cfg.get("WATCHDOG_INTERVAL", 60))
 
     print_info(f"Server watchdog started. Checking every {check_interval} seconds.")
@@ -328,21 +375,21 @@ def watch_server(cfg):
     try:
         with Progress(
                 SpinnerColumn(),
-                TextColumn("[bold green]Monitoring server...[/bold green]"),
+                TextColumn("[green]Monitoring server...[/green]"),
                 console=console
         ) as progress:
             task = progress.add_task("Checking...", total=None)
             while True:
                 if not screen_session_exists(cfg["SCREEN_NAME"]):
-                    progress.update(task, description="[bold red]Server offline! Restarting...[/bold red]")
+                    progress.update(task, description="[red]Server offline! Restarting...[/red]")
                     start_server(cfg)
-                    progress.update(task, description="[bold green]Monitoring server...[/bold green]")
+                    progress.update(task, description="[green]Monitoring server...[/green]")
                 time.sleep(check_interval)
     except KeyboardInterrupt:
-        print_info("\n👋 Watchdog stopped.")
+        print_info("\nWatchdog stopped.")
 
 def start_scheduled_backups(cfg):
-    print_header("⏰ Starting Scheduled Backups")
+    print_header("Starting Scheduled Backups")
     interval_minutes = int(cfg.get("AUTO_BACKUP_INTERVAL", 720))
 
     print_info(f"Scheduled backups every {interval_minutes} minutes")
@@ -355,7 +402,7 @@ def start_scheduled_backups(cfg):
 
             # Sleep with countdown
             with Progress(
-                    TextColumn("[bold blue]Next backup in: [/bold blue]"),
+                    TextColumn("[blue]Next backup in: [/blue]"),
                     console=console
             ) as progress:
                 task = progress.add_task("Waiting...", total=interval_minutes)
@@ -363,10 +410,10 @@ def start_scheduled_backups(cfg):
                     time.sleep(60)  # 1 minute
                     progress.update(task, advance=1)
     except KeyboardInterrupt:
-        print_info("\n👋 Scheduled backups stopped.")
+        print_info("\nScheduled backups stopped.")
 
 def list_players(cfg):
-    print_header("👥 Online Players")
+    print_header("Online Players")
     if not screen_session_exists(cfg["SCREEN_NAME"]):
         print_warning("Server is not running.")
         return
@@ -377,13 +424,13 @@ def list_players(cfg):
     show_recent_logs(cfg, lines=3)
 
 def show_server_stats(cfg):
-    print_header("📊 Server Statistics")
+    print_header("Server Statistics")
     if not screen_session_exists(cfg["SCREEN_NAME"]):
         print_warning("Server is not running.")
         return
 
     table = Table(title="Server Statistics")
-    table.add_column("Metric", style="cyan")
+    table.add_column("Metric", style="blue")
     table.add_column("Value", style="green")
 
     # Get server process info
@@ -416,15 +463,15 @@ def show_server_stats(cfg):
     show_recent_logs(cfg, lines=3)
 
 def print_caffeinate_help():
-    print_header("☕ How to Prevent System Sleep")
+    print_header("How to Prevent System Sleep")
 
     panel = Panel(
         "[bold]To prevent your system from sleeping while running the server:[/bold]\n\n"
-        "[cyan]macOS:[/cyan]\n"
+        "[blue]macOS:[/blue]\n"
         "  caffeinate -s mcutil start\n\n"
-        "[cyan]Linux:[/cyan]\n"
+        "[blue]Linux:[/blue]\n"
         "  systemd-inhibit --what=sleep --why='Minecraft Server' mcutil start\n\n"
-        "[cyan]Windows:[/cyan]\n"
+        "[blue]Windows:[/blue]\n"
         "  1. Open Power Options in Control Panel\n"
         "  2. Select 'High Performance' plan\n"
         "  3. Change plan settings > Change advanced settings\n"
@@ -433,25 +480,53 @@ def print_caffeinate_help():
         "  [macOS] caffeinate -s mcutil watch &\n"
         "  [Linux] systemd-inhibit --what=sleep mcutil watch &",
         title="Sleep Prevention Guide",
-        border_style="green"
+        border_style="dim blue"
     )
     console.print(panel)
 
 # === Main Function ===
 
 def main():
-    parser = argparse.ArgumentParser(description="🧰 Minecraft Server Utility Script")
+    parser = argparse.ArgumentParser(description="Minecraft Server Utility Script")
+    parser.add_argument("--config", help="Path to alternative config file")
+
     subparsers = parser.add_subparsers(dest="action", help="Available commands")
 
+    # Setup parser
     subparsers.add_parser("setup", help="Create or update configuration")
-    subparsers.add_parser("start", help="Start the server")
+
+    # Start parser with options
+    start_parser = subparsers.add_parser("start", help="Start the server")
+    start_parser.add_argument("--gui", action="store_true", help="Start server with GUI (default: nogui)")
+    start_parser.add_argument("--ram", help="Override RAM allocation (e.g., '4G')")
+
+    # Stop parser
     subparsers.add_parser("stop", help="Stop the server")
-    subparsers.add_parser("restart", help="Restart the server")
-    subparsers.add_parser("backup", help="Backup the world folder")
-    subparsers.add_parser("logs", help="Print latest logs")
+
+    # Restart parser with options
+    restart_parser = subparsers.add_parser("restart", help="Restart the server")
+    restart_parser.add_argument("--gui", action="store_true", help="Restart server with GUI (default: nogui)")
+    restart_parser.add_argument("--ram", help="Override RAM allocation (e.g., '4G')")
+
+    # Backup parser with options
+    backup_parser = subparsers.add_parser("backup", help="Backup the world folder")
+    backup_parser.add_argument("--include", help="Comma-separated list of items to include")
+    backup_parser.add_argument("--exclude", help="Comma-separated list of items to exclude")
+    backup_parser.add_argument("--compress", help="Compression level (0-9, where 0=none, 9=max)")
+
+    # Logs parser with options
+    logs_parser = subparsers.add_parser("logs", help="Print latest logs")
+    logs_parser.add_argument("--lines", help="Number of lines to show")
+
+    # Other parsers
     subparsers.add_parser("status", help="Check if server is running")
-    subparsers.add_parser("watch", help="Monitor and auto-restart server if it crashes")
-    subparsers.add_parser("schedule-backups", help="Start scheduled backup daemon")
+
+    watch_parser = subparsers.add_parser("watch", help="Monitor and auto-restart server if it crashes")
+    watch_parser.add_argument("--interval", help="Override check interval in seconds")
+
+    backup_scheduler = subparsers.add_parser("schedule-backups", help="Start scheduled backup daemon")
+    backup_scheduler.add_argument("--interval", help="Override backup interval in minutes")
+
     subparsers.add_parser("players", help="List online players")
     subparsers.add_parser("stats", help="Show server statistics")
     subparsers.add_parser("caffeinate-help", help="Show instructions for preventing system sleep")
@@ -466,6 +541,13 @@ def main():
 
     # === Command Dispatcher ===
 
+    # Handle custom config path
+    config_path = args.config if args.config else CONFIG_PATH
+    if args.config:
+        global CONFIG_PATH
+        CONFIG_PATH = args.config
+        print_info(f"Using custom config: {CONFIG_PATH}")
+
     if args.action == "setup":
         setup_config()
     elif args.action == "caffeinate-help":
@@ -473,28 +555,47 @@ def main():
     elif args.action:
         cfg = load_config()
         match args.action:
-            case "start": start_server(cfg)
-            case "stop": stop_server(cfg)
-            case "restart": restart_server(cfg)
-            case "backup": backup_world(cfg)
-            case "logs": show_logs(cfg)
-            case "status": show_status(cfg)
-            case "cmd": send_command(cfg, args.cmd)
-            case "say": send_command(cfg, f"say {args.msg}")
-            case "watch": watch_server(cfg)
-            case "schedule-backups": start_scheduled_backups(cfg)
-            case "players": list_players(cfg)
-            case "stats": show_server_stats(cfg)
+            case "start":
+                start_server(cfg, gui=args.gui, ram=args.ram)
+            case "stop":
+                stop_server(cfg)
+            case "restart":
+                stop_server(cfg)
+                start_server(cfg, gui=args.gui, ram=args.ram)
+            case "backup":
+                backup_world(cfg, include_list=args.include, exclude_list=args.exclude,
+                             compression_level=args.compress)
+            case "logs":
+                show_logs(cfg, lines=args.lines)
+            case "status":
+                show_status(cfg)
+            case "cmd":
+                send_command(cfg, args.cmd)
+            case "say":
+                send_command(cfg, f"say {args.msg}")
+            case "watch":
+                if args.interval:
+                    cfg["WATCHDOG_INTERVAL"] = args.interval
+                watch_server(cfg)
+            case "schedule-backups":
+                if args.interval:
+                    cfg["AUTO_BACKUP_INTERVAL"] = args.interval
+                start_scheduled_backups(cfg)
+            case "players":
+                list_players(cfg)
+            case "stats":
+                show_server_stats(cfg)
     else:
         console.print(Panel.fit(
-            "[bold cyan]MCUtil - Minecraft Server Utility[/bold cyan]\n\n"
+            "[bold blue]MCUtil - Minecraft Server Utility[/bold blue]\n\n"
             "Run [yellow]mcutil setup[/yellow] to configure your server\n"
             "Run [yellow]mcutil start[/yellow] to start the server\n"
             "Run [yellow]mcutil status[/yellow] to check server status\n\n"
             "For sleep prevention use:\n"
             "  [yellow]caffeinate -s mcutil start[/yellow] (macOS)\n"
             "  [yellow]mcutil caffeinate-help[/yellow] for more info",
-            title="Welcome to MCUtil", border_style="green"
+            title="Welcome to MCUtil",
+            border_style="dim blue"
         ))
         parser.print_help()
 
