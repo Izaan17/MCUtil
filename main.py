@@ -487,6 +487,8 @@ def print_caffeinate_help():
 # === Main Function ===
 
 def main():
+    global CONFIG_PATH
+
     parser = argparse.ArgumentParser(description="Minecraft Server Utility Script")
     parser.add_argument("--config", help="Path to alternative config file")
 
@@ -542,9 +544,7 @@ def main():
     # === Command Dispatcher ===
 
     # Handle custom config path
-    config_path = args.config if args.config else CONFIG_PATH
     if args.config:
-        global CONFIG_PATH
         CONFIG_PATH = args.config
         print_info(f"Using custom config: {CONFIG_PATH}")
 
