@@ -10,7 +10,7 @@ from datetime import datetime
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 from rich.table import Table
 
 # Initialize rich console
@@ -412,6 +412,7 @@ def watch_server(cfg):
 
 
 def start_scheduled_backups(cfg):
+    console = Console()
     print_header("Starting Scheduled Backups")
     interval_minutes = int(cfg.get("AUTO_BACKUP_INTERVAL", 720))
 
@@ -425,12 +426,13 @@ def start_scheduled_backups(cfg):
 
             # Sleep with countdown
             with Progress(
-                    TextColumn("[blue]Next backup in: [/blue]"),
+                    TextColumn("[blue]Next backup in: "),
+                    TimeRemainingColumn(),
                     console=console
             ) as progress:
-                task = progress.add_task("Waiting...", total=interval_minutes)
-                for _ in range(interval_minutes):
-                    time.sleep(60)  # 1 minute
+                task = progress.add_task("Waiting...", total=interval_minutes * 60)
+                for _ in range(interval_minutes * 60):
+                    time.sleep(1)  # 1 second
                     progress.update(task, advance=1)
     except KeyboardInterrupt:
         print_info("\nScheduled backups stopped.")
