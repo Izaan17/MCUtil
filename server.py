@@ -100,7 +100,7 @@ def get_server_stats(cfg):
         try:
             pid_cmd = f"pgrep -f '{cfg['SERVER_JAR']}'"
             pid_result = subprocess.run(pid_cmd, shell=True, capture_output=True, text=True)
-            pid = pid_result.stdout.strip().split('\n')[0]
+            pid = pid_result.stdout.strip().split('\n')[1]
 
             cpu_cmd = f"ps -p {pid} -o %cpu=,%mem=,etime="
             result = subprocess.run(cpu_cmd, shell=True, capture_output=True, text=True)
