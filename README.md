@@ -20,16 +20,16 @@ mcutil setup
 
 This creates a config file (`~/.mcserverconfig.json`) with:
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| SERVER_JAR | Server executable | server.jar |
-| SERVER_DIR | Server location | ~/minecraft-server |
-| BACKUP_DIR | Backup storage | ~/minecraft-backups |
-| JAVA_OPTIONS | Java memory settings | -Xmx2G -Xms1G |
-| SCREEN_NAME | Screen session name | minecraft |
-| MAX_BACKUPS | Number to keep | 5 |
-| WATCHDOG_INTERVAL | Auto-restart check (seconds) | 60 |
-| AUTO_BACKUP_INTERVAL | Backup frequency (minutes) | 720 (12h) |
+| Setting              | Description                  | Default             |
+|----------------------|------------------------------|---------------------|
+| SERVER_JAR           | Server executable            | server.jar          |
+| SERVER_DIR           | Server location              | ~/minecraft-server  |
+| BACKUP_DIR           | Backup storage               | ~/minecraft-backups |
+| JAVA_OPTIONS         | Java memory settings         | -Xmx2G -Xms1G       |
+| SCREEN_NAME          | Screen session name          | minecraft           |
+| MAX_BACKUPS          | Number to keep               | 5                   |
+| WATCHDOG_INTERVAL    | Auto-restart check (seconds) | 60                  |
+| AUTO_BACKUP_INTERVAL | Backup frequency (minutes)   | 720 (12h)           |
 
 ## Server Control
 
