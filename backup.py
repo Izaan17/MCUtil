@@ -7,62 +7,217 @@ from rich.progress import Progress
 
 from utils import print_info, print_success, print_warning, print_error
 
+# Define backup types with their respective items
+BACKUP_TYPES = {
+    "regular": {
+        "description": "Standard backup with worlds, and config",
+        "items": [
+            "world",
+            "world_nether",
+            "world_the_end",
+            "server.properties",
+            "banned-ips.json",
+            "banned-players.json",
+            "ops.json",
+            "whitelist.json",
+            "config"
+        ]
+    },
+    "medium": {
+        "description": "Comprehensive backup including user configs and caches",
+        "items": [
+            "world",
+            "world_nether",
+            "world_the_end",
+            "server.properties",
+            "banned-ips.json",
+            "banned-players.json",
+            "ops.json",
+            "whitelist.json",
+            "mods",
+            "config",
+            "defaultconfigs",
+            "user_jvm_args.txt",
+            "usercache.json",
+            "usernamecache.json",
+            "eula.txt"
+        ]
+    },
+    "hard": {
+        "description": "Complete backup with all server files",
+        "items": [
+            "all"
+        ]
+    }
+}
 
-def backup_world(cfg, include_list=None, exclude_list=None, compression_level=None):
-    print_info("Starting backup...")
+
+def get_backup_size_estimate(cfg, items):
+    """Estimate backup size by checking file/folder sizes"""
+    total_size = 0
+    for item in items:
+        path = os.path.join(cfg["SERVER_DIR"], item)
+        if os.path.exists(path):
+            if os.path.isfile(path):
+                total_size += os.stat(path).st_size
+            elif os.path.isdir(path):
+                for dirpath, dirnames, filenames in os.walk(path):
+                    for filename in filenames:
+                        filepath = os.path.join(dirpath, filename)
+                        try:
+                            total_size += os.stat(filepath).st_size
+                        except (OSError, IOError):
+                            continue
+    return total_size
+
+
+def format_size(size_bytes):
+    """Convert bytes to human readable format"""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} TB"
+
+
+def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=None, compression_level=None):
+    """
+    Create a backup of the Minecraft server
+
+    Args:
+        cfg: Configuration dictionary
+        backup_type: Type of backup (soft, regular, medium, hard)
+        include_list: Custom comma-separated list of items to include
+        exclude_list: Comma-separated list of items to exclude
+        compression_level: ZIP compression level (0-9)
+    """
+
+    # Validate backup type
+    if backup_type not in BACKUP_TYPES:
+        print_error(f"Invalid backup type '{backup_type}'. Available types: {', '.join(BACKUP_TYPES.keys())}")
+        return False
+
+    backup_info = BACKUP_TYPES[backup_type]
+    print_info(f"Starting {backup_type} backup...")
+    print_info(f"Type: {backup_info['description']}")
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_name = f"server_backup_{timestamp}"
+    backup_name = f"server_backup_{backup_type}_{timestamp}"
     backup_path = os.path.join(cfg["BACKUP_DIR"], backup_name)
+    temp_dir = os.path.join(cfg["BACKUP_DIR"], f"_temp_backup_{timestamp}")
 
-    default_items = ["world", "world_nether", "world_the_end", "server.properties", "banned-ips.json",
-        "banned-players.json", "ops.json", "whitelist.json", "mods", "config", "scripts", "plugins"]
+    # Determine what to back up
+    if include_list:
+        include_items = include_list.split(',')
+        print_info(f"Using custom include list: {include_list}")
+    else:
+        if backup_info["items"] == ["all"]:
+            include_items = os.listdir(cfg["SERVER_DIR"])
+        else:
+            include_items = backup_info["items"].copy()
 
-    include_items = include_list.split(',') if include_list else default_items
+    # Apply exclusions
     if exclude_list:
         exclude_items = exclude_list.split(',')
-        include_items = [item for item in include_items if item not in exclude_items]
+        include_items = [item.strip() for item in include_items if item.strip() not in exclude_items]
         print_info(f"Excluding: {exclude_list}")
 
-    print_info(f"Backing up: {', '.join(include_items)}")
+    print_info(f"Items to backup: {', '.join(include_items)}")
+
+    # Estimate backup size
+    estimated_size = get_backup_size_estimate(cfg, include_items)
+    print_info(f"Estimated backup size: {format_size(estimated_size)}")
 
     try:
         os.makedirs(cfg["BACKUP_DIR"], exist_ok=True)
-        temp_dir = os.path.join(cfg["BACKUP_DIR"], f"_temp_backup_{timestamp}")
+
         os.makedirs(temp_dir, exist_ok=True)
 
+        copied_items = []
+        missing_items = []
+
         with Progress() as progress:
-            task = progress.add_task("[green]Backing up server...", total=len(include_items) + 3)
+            task = progress.add_task("[green]Backing up server files...", total=len(include_items) + 3)
+
             for item in include_items:
-                src = os.path.join(cfg["SERVER_DIR"], item)
-                dst = os.path.join(temp_dir, item)
+                src = os.path.join(cfg["SERVER_DIR"], item.strip())
+                dst = os.path.join(temp_dir, item.strip())
+
                 if os.path.exists(src):
-                    if os.path.isdir(src):
-                        shutil.copytree(src, dst)
-                    else:
-                        shutil.copy2(src, dst)
+                    try:
+                        if os.path.isdir(src):
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                        else:
+                            os.makedirs(os.path.dirname(dst), exist_ok=True)
+                            shutil.copy2(src, dst)
+                        copied_items.append(item.strip())
+                    except Exception as e:
+                        print_warning(f"Failed to copy {item}: {e}")
+                        missing_items.append(item.strip())
                 else:
                     print_warning(f"Missing: {item}")
+                    missing_items.append(item.strip())
+
                 progress.update(task, advance=1)
 
             progress.update(task, description="[yellow]Creating ZIP archive...")
-            zip_options = {}
+
+            # Set compression options
+            zip_options = {'compression': zipfile.ZIP_DEFLATED}
             if compression_level is not None:
                 try:
                     level = int(compression_level)
                     if 0 <= level <= 9:
-                        zip_options['compression'] = zipfile.ZIP_DEFLATED
                         zip_options['compresslevel'] = level
                         print_info(f"Using compression level: {level}")
+                    else:
+                        print_warning(f"Compression level must be 0-9, got {level}")
                 except ValueError:
                     print_warning(f"Invalid compression level '{compression_level}', using default")
+            else:
+                # Set default compression levels based on backup type
+                default_compression = {
+                    "soft": 6,
+                    "regular": 6,
+                    "medium": 5,
+                    "hard": 3  # Lower compression for large backups
+                }
+                zip_options['compresslevel'] = default_compression[backup_type]
 
             shutil.make_archive(backup_path, 'zip', temp_dir, **zip_options)
             progress.update(task, advance=1)
 
-            progress.update(task, description="[yellow]Cleaning up...")
+            progress.update(task, description="[yellow]Cleaning up temporary files...")
             shutil.rmtree(temp_dir)
             progress.update(task, advance=1)
 
-        print_success(f"Backup saved as {backup_path}.zip")
+        # Get the final backup size
+        final_backup_path = f"{backup_path}.zip"
+        actual_size = os.path.getsize(final_backup_path)
+
+        print_success(f"Backup completed successfully!")
+        print_success(f"Backup saved as: {final_backup_path}")
+        print_success(f"Final size: {format_size(actual_size)}")
+        print_info(f"Items backed up: {len(copied_items)}")
+
+        if missing_items:
+            print_warning(f"Missing items: {len(missing_items)} - {', '.join(missing_items)}")
+
+        return True
+
     except Exception as e:
         print_error(f"Backup failed: {e}")
+        # Clean up the temp directory if it exists
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        return False
+
+
+def list_backup_types():
+    """Print information about available backup types"""
+    print_info("Available backup types:")
+    for backup_type, info in BACKUP_TYPES.items():
+        print_info(f"  {backup_type}: {info['description']}")
+        print_info(f"    Items: {', '.join(info['items'])}")
+        print_info("")

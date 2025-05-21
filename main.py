@@ -1,6 +1,6 @@
 import argparse
 
-from backup import backup_world
+from backup import backup_world, list_backup_types
 from config import load_config, save_config, DEFAULT_CONFIG
 from monitor import watch_server, start_scheduled_backups
 from server import start_server, stop_server, restart_server, send_command, show_status
@@ -34,9 +34,15 @@ def main():
     subparsers.add_parser("status", help="Show server status")
 
     backup_parser = subparsers.add_parser("backup", help="Backup the server")
-    backup_parser.add_argument("--include", help="Items to include (comma-separated)")
-    backup_parser.add_argument("--exclude", help="Items to exclude")
-    backup_parser.add_argument("--compress", help="Compression level 0-9")
+    backup_parser.add_argument("--type",
+                               choices=["regular", "medium", "hard"],
+                               default="regular",
+                               help="Backup type: soft (minimal), regular (standard), medium (comprehensive), hard (complete)")
+    backup_parser.add_argument("--include", help="Items to include (comma-separated, overrides type)")
+    backup_parser.add_argument("--exclude", help="Items to exclude from the selected type")
+    backup_parser.add_argument("--compress", help="Compression level 0-9 (0=fastest, 9=smallest)")
+
+    subparsers.add_parser("backup-types", help="List available backup types and their contents")
 
     subparsers.add_parser("watch", help="Start server watchdog")
     subparsers.add_parser("schedule-backups", help="Run automatic backups")
@@ -48,6 +54,8 @@ def main():
 
     if args.action == "setup":
         setup_config()
+    elif args.action == "backup-types":
+        list_backup_types()
     else:
         cfg = load_config()
         match args.action:
@@ -60,7 +68,11 @@ def main():
             case "status":
                 show_status(cfg)
             case "backup":
-                backup_world(cfg, include_list=args.include, exclude_list=args.exclude, compression_level=args.compress)
+                backup_world(cfg,
+                             backup_type=args.type,
+                             include_list=args.include,
+                             exclude_list=args.exclude,
+                             compression_level=args.compress)
             case "watch":
                 watch_server(cfg)
             case "schedule-backups":
