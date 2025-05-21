@@ -108,6 +108,7 @@ def validate_config(cfg):
     jar_path = os.path.join(cfg["SERVER_DIR"], cfg["SERVER_JAR"])
     if not os.path.isfile(jar_path):
         print_warning(f"Server JAR not found: {jar_path}")
+        return False
 
     return True
 
