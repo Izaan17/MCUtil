@@ -1,7 +1,9 @@
 import subprocess
 import time
 
+from rich.live import Live
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
 from utils import print_info, print_warning, print_success, print_error, print_header
 
@@ -88,9 +90,40 @@ def send_command(cfg, cmd):
         print_success(f"Sent command: {cmd}")
 
 
-def show_status(cfg):
-    print_header("Server Status")
+def get_server_stats(cfg):
+    table = Table(title="Minecraft Server Status (Live)")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+
     if screen_session_exists(cfg["SCREEN_NAME"]):
-        print_success("Server is running.")
+        table.add_row("Status", "RUNNING")
+        try:
+            pid_cmd = f"pgrep -f '{cfg['SERVER_JAR']}'"
+            pid_result = subprocess.run(pid_cmd, shell=True, capture_output=True, text=True)
+            pid = pid_result.stdout.strip().split('\n')[0]
+
+            cpu_cmd = f"ps -p {pid} -o %cpu=,%mem=,etime="
+            result = subprocess.run(cpu_cmd, shell=True, capture_output=True, text=True)
+            if result.stdout:
+                cpu, mem, etime = result.stdout.strip().split(maxsplit=2)
+                table.add_row("CPU Usage", f"{cpu.strip()}%")
+                table.add_row("Memory Usage", f"{mem.strip()}%")
+                table.add_row("Uptime", etime.strip())
+
+        except Exception as e:
+            table.add_row("Error", str(e))
     else:
-        print_warning("Server is not running.")
+        table.add_row("Status", "STOPPED")
+
+    return table
+
+
+def show_status(cfg):
+    print_header("Live Server Status Monitor")
+    try:
+        with Live(get_server_stats(cfg), refresh_per_second=1) as live:
+            while True:
+                time.sleep(1)
+                live.update(get_server_stats(cfg))
+    except KeyboardInterrupt:
+        print_info("Stopped monitoring.")
