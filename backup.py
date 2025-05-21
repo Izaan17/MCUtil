@@ -99,10 +99,15 @@ def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=Non
     print_info(f"Starting {backup_type} backup...")
     print_info(f"Type: {backup_info['description']}")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Create a date-based folder structure
+    now = datetime.now()
+    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+    date_folder = now.strftime("%Y-%m-%d")
+
     backup_name = f"server_backup_{backup_type}_{timestamp}"
-    backup_path = os.path.join(cfg["BACKUP_DIR"], backup_name)
-    temp_dir = os.path.join(cfg["BACKUP_DIR"], f"_temp_backup_{timestamp}")
+    date_backup_dir = os.path.join(cfg["BACKUP_DIR"], date_folder)
+    backup_path = os.path.join(date_backup_dir, backup_name)
+    temp_dir = os.path.join(date_backup_dir, f"_temp_backup_{timestamp}")
 
     # Determine what to back up
     if include_list:
@@ -121,13 +126,16 @@ def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=Non
         print_info(f"Excluding: {exclude_list}")
 
     print_info(f"Items to backup: {', '.join(include_items)}")
+    print_info(f"Backup will be saved in the folder: {date_folder}")
 
     # Estimate backup size
     estimated_size = get_backup_size_estimate(cfg, include_items)
     print_info(f"Estimated backup size: {format_size(estimated_size)}")
 
     try:
+        # Create backup directory structure (main backup dir and date folder)
         os.makedirs(cfg["BACKUP_DIR"], exist_ok=True)
+        os.makedirs(date_backup_dir, exist_ok=True)
 
         os.makedirs(temp_dir, exist_ok=True)
 
