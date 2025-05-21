@@ -1,6 +1,8 @@
 import os
 import shutil
+import glob
 from datetime import datetime
+from pathlib import Path
 
 from rich.progress import Progress
 
@@ -79,13 +81,55 @@ def format_size(size_bytes):
     return f"{size_bytes:.1f} TB"
 
 
+def cleanup_old_backups(cfg, backup_type):
+    """Clean up old backups based on retention policy"""
+    type_backup_dir = os.path.join(cfg["BACKUP_DIR"], backup_type)
+
+    # Get retention limit for this backup type
+    retention_key = f"MAX_{backup_type.upper()}_BACKUPS"
+    max_backups = int(cfg.get(retention_key, cfg.get("MAX_BACKUPS", 5)))
+
+    if not os.path.exists(type_backup_dir):
+        return
+
+    # Find all backup files for this type
+    backup_pattern = os.path.join(type_backup_dir, "**", f"server_backup_{backup_type}_*.zip")
+    all_backups = glob.glob(backup_pattern, recursive=True)
+
+    if len(all_backups) <= max_backups:
+        return
+
+    # Sort by modification time (oldest first)
+    all_backups.sort(key=os.path.getmtime)
+
+    # Remove oldest backups
+    backups_to_remove = all_backups[:-max_backups]
+    removed_count = 0
+
+    for backup_file in backups_to_remove:
+        try:
+            os.remove(backup_file)
+            removed_count += 1
+
+            # Remove empty date directories
+            date_dir = os.path.dirname(backup_file)
+            if not os.listdir(date_dir):
+                os.rmdir(date_dir)
+
+        except Exception as e:
+            print_warning(f"Failed to remove old backup {backup_file}: {e}")
+
+    if removed_count > 0:
+        print_info(f"Cleaned up {removed_count} old {backup_type} backup(s)")
+
+
 def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=None):
     """
     Create a backup of the Minecraft server
 
     Args:
         cfg: Configuration dictionary
-        backup_type: Type of backup (soft, regular, medium, hard)
+        backup_type: Type of backup (regular, medium, hard)
         include_list: Custom comma-separated list of items to include
         exclude_list: Comma-separated list of items to exclude
     """
@@ -99,13 +143,16 @@ def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=Non
     print_info(f"Starting {backup_type} backup...")
     print_info(f"Type: {backup_info['description']}")
 
-    # Create a date-based folder structure
+    # Create a date-based folder structure with type-specific organization
     now = datetime.now()
     timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
     date_folder = now.strftime("%Y-%m-%d")
 
+    # Type-specific backup directory structure
+    type_backup_dir = os.path.join(cfg["BACKUP_DIR"], backup_type)
+    date_backup_dir = os.path.join(type_backup_dir, date_folder)
+
     backup_name = f"server_backup_{backup_type}_{timestamp}"
-    date_backup_dir = os.path.join(cfg["BACKUP_DIR"], date_folder)
     backup_path = os.path.join(date_backup_dir, backup_name)
     temp_dir = os.path.join(date_backup_dir, f"_temp_backup_{timestamp}")
 
@@ -126,17 +173,17 @@ def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=Non
         print_info(f"Excluding: {exclude_list}")
 
     print_info(f"Items to backup: {', '.join(include_items)}")
-    print_info(f"Backup will be saved in the folder: {date_folder}")
+    print_info(f"Backup will be saved in: {backup_type}/{date_folder}")
 
     # Estimate backup size
     estimated_size = get_backup_size_estimate(cfg, include_items)
     print_info(f"Estimated backup size: {format_size(estimated_size)}")
 
     try:
-        # Create backup directory structure (main backup dir and date folder)
+        # Create backup directory structure
         os.makedirs(cfg["BACKUP_DIR"], exist_ok=True)
+        os.makedirs(type_backup_dir, exist_ok=True)
         os.makedirs(date_backup_dir, exist_ok=True)
-
         os.makedirs(temp_dir, exist_ok=True)
 
         copied_items = []
@@ -167,7 +214,6 @@ def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=Non
                 progress.update(task, advance=1)
 
             progress.update(task, description="[yellow]Creating ZIP archive...")
-
             shutil.make_archive(backup_path, 'zip', temp_dir)
             progress.update(task, advance=1)
 
@@ -187,6 +233,9 @@ def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=Non
         if missing_items:
             print_warning(f"Missing items: {len(missing_items)} - {', '.join(missing_items)}")
 
+        # Clean up old backups
+        cleanup_old_backups(cfg, backup_type)
+
         return True
 
     except Exception as e:
@@ -205,3 +254,24 @@ def list_backup_types():
         print_info(f"  {backup_type}: {info['description']}")
         print_info(f"    Items: {', '.join(info['items'])}")
         print_info("")
+
+
+def get_backup_stats(cfg):
+    """Get statistics about existing backups"""
+    backup_dir = Path(cfg["BACKUP_DIR"])
+    stats = {}
+
+    for backup_type in BACKUP_TYPES.keys():
+        type_dir = backup_dir / backup_type
+        if type_dir.exists():
+            backup_files = list(type_dir.glob("*/server_backup_*.zip"))
+            total_size = sum(f.stat().st_size for f in backup_files if f.exists())
+            stats[backup_type] = {
+                "count": len(backup_files),
+                "total_size": total_size,
+                "latest": max((f.stat().st_mtime for f in backup_files), default=0)
+            }
+        else:
+            stats[backup_type] = {"count": 0, "total_size": 0, "latest": 0}
+
+    return stats
