@@ -9,7 +9,7 @@ DEFAULT_CONFIG = {
     "SERVER_JAR": "server.jar",
     "SERVER_DIR": str(Path.home() / "minecraft-server"),
     "BACKUP_DIR": str(Path.home() / "minecraft-backups"),
-    "JAVA_OPTIONS": "-Xmx2G -Xms1G",
+    "JAVA_OPTIONS": "-Xmx4G",
     "SCREEN_NAME": "minecraft",
     "MAX_BACKUPS": "5",
     "WATCHDOG_INTERVAL": "60",
