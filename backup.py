@@ -1,6 +1,5 @@
 import os
 import shutil
-import zipfile
 from datetime import datetime
 
 from rich.progress import Progress
@@ -80,7 +79,7 @@ def format_size(size_bytes):
     return f"{size_bytes:.1f} TB"
 
 
-def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=None, compression_level=None):
+def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=None):
     """
     Create a backup of the Minecraft server
 
@@ -89,7 +88,6 @@ def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=Non
         backup_type: Type of backup (soft, regular, medium, hard)
         include_list: Custom comma-separated list of items to include
         exclude_list: Comma-separated list of items to exclude
-        compression_level: ZIP compression level (0-9)
     """
 
     # Validate backup type
@@ -162,29 +160,7 @@ def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=Non
 
             progress.update(task, description="[yellow]Creating ZIP archive...")
 
-            # Set compression options
-            zip_options = {'compression': zipfile.ZIP_DEFLATED}
-            if compression_level is not None:
-                try:
-                    level = int(compression_level)
-                    if 0 <= level <= 9:
-                        zip_options['compresslevel'] = level
-                        print_info(f"Using compression level: {level}")
-                    else:
-                        print_warning(f"Compression level must be 0-9, got {level}")
-                except ValueError:
-                    print_warning(f"Invalid compression level '{compression_level}', using default")
-            else:
-                # Set default compression levels based on backup type
-                default_compression = {
-                    "soft": 6,
-                    "regular": 6,
-                    "medium": 5,
-                    "hard": 3  # Lower compression for large backups
-                }
-                zip_options['compresslevel'] = default_compression[backup_type]
-
-            shutil.make_archive(backup_path, 'zip', temp_dir, **zip_options)
+            shutil.make_archive(backup_path, 'zip', temp_dir)
             progress.update(task, advance=1)
 
             progress.update(task, description="[yellow]Cleaning up temporary files...")

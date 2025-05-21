@@ -40,7 +40,6 @@ def main():
                                help="Backup type: soft (minimal), regular (standard), medium (comprehensive), hard (complete)")
     backup_parser.add_argument("--include", help="Items to include (comma-separated, overrides type)")
     backup_parser.add_argument("--exclude", help="Items to exclude from the selected type")
-    backup_parser.add_argument("--compress", help="Compression level 0-9 (0=fastest, 9=smallest)")
 
     subparsers.add_parser("backup-types", help="List available backup types and their contents")
 
@@ -71,8 +70,7 @@ def main():
                 backup_world(cfg,
                              backup_type=args.type,
                              include_list=args.include,
-                             exclude_list=args.exclude,
-                             compression_level=args.compress)
+                             exclude_list=args.exclude)
             case "watch":
                 watch_server(cfg)
             case "schedule-backups":
