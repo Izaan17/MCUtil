@@ -1,5 +1,4 @@
 """Simple backup scheduler for MCUtil."""
-
 import signal
 import time
 from datetime import datetime

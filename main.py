@@ -1,9 +1,9 @@
+#!/usr/bin/env python3
 """
 MCUtil - Simple Minecraft Server Manager
 
 A clean, reliable tool for managing Minecraft servers with automated backups.
 """
-
 import argparse
 import sys
 
@@ -79,17 +79,22 @@ def cmd_backup(args):
             return True
 
     elif args.backup_action == "info":
-        backup_manager.print_backup_list()
         stats = backup_manager.get_backup_stats()
 
-        print("\nBackup Statistics")
-        print("=" * 20)
+        print("\n📊 Backup Statistics")
+        print("=" * 30)
         print(f"Total backups: {stats['total_backups']}")
         print(f"Quick backups: {stats['quick_backups']}")
         print(f"Full backups: {stats['full_backups']}")
+        print(f"Backup days: {stats['backup_days']}")
         print(f"Total size: {stats['total_size_formatted']}")
         if stats['latest_backup']:
-            print(f"Latest: {stats['latest_backup'].strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"Latest backup: {stats['latest_backup'].strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Backup directory: {stats['backup_dir']}")
+
+        print("\n📁 Recent Backups")
+        print("=" * 30)
+        backup_manager.print_backup_list()
 
         return True
     return None
