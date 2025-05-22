@@ -164,7 +164,10 @@ class BackupManager:
         except Exception as e:
             print_status(f"Backup failed: {e}", "error")
             # Clean up partial backup
-            backup_path.unlink(True)
+            try:
+                backup_path.unlink()
+            except FileNotFoundError:
+                pass
             return None
 
     def _estimate_backup_size(self, backup_type: str) -> int:

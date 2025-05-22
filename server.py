@@ -171,8 +171,8 @@ class MinecraftServer:
         try:
             size = get_directory_size(self.server_dir)
             status["directory_size"] = format_bytes(size)
-        except Exception as error:
-            print(error)
+        except Exception as e:
+            print_status(f"Warning: Could not get directory size: {e}", "warning")
             status["directory_size"] = "Unknown"
 
         return status

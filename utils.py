@@ -115,34 +115,6 @@ def wait_for_condition(condition_func, timeout: int = 30, interval: float = 1.0)
     return False
 
 
-def cleanup_old_files(directory: Path, pattern: str, max_files: int):
-    """
-    Keep only the newest max_files matching pattern in directory.
-    
-    Args:
-        directory: Directory to clean
-        pattern: File pattern (glob)
-        max_files: Maximum files to keep
-    """
-    if not directory.exists():
-        return
-
-    files = list(directory.glob(pattern))
-    if len(files) <= max_files:
-        return
-
-    # Sort by modification time (newest first)
-    files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-
-    # Remove old files
-    for file_path in files[max_files:]:
-        try:
-            file_path.unlink()
-            print(f"Removed old file: {file_path.name}")
-        except OSError as e:
-            print(f"Failed to remove {file_path}: {e}")
-
-
 def print_status(message: str, status: str = "info"):
     """Print colored status message."""
     colors = {

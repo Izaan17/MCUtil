@@ -1,4 +1,3 @@
-"""Simple backup scheduler for MCUtil."""
 import signal
 import time
 from datetime import datetime
@@ -18,6 +17,7 @@ class BackupScheduler:
         self.running = False
         self.interval = config.get("backup_interval", 60) * 60  # Convert minutes to seconds
         self.last_backup = None
+        self.scheduler_start_time = None
 
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -35,6 +35,7 @@ class BackupScheduler:
         print_status("Press Ctrl+C to stop", "info")
 
         self.running = True
+        self.scheduler_start_time = time.time()
 
         # Do an initial backup
         print_status("Creating initial backup...", "info")
@@ -43,6 +44,21 @@ class BackupScheduler:
         # Main scheduler loop
         while self.running:
             try:
+                # Show the next backup time
+                if self.last_backup:
+                    next_backup_time = datetime.fromtimestamp(self.last_backup + self.interval)
+                    time_until_next = int((self.last_backup + self.interval) - time.time())
+
+                    if time_until_next > 0:
+                        hours, remainder = divmod(time_until_next, 3600)
+                        minutes, seconds = divmod(remainder, 60)
+
+                        print_status(
+                            f"Next backup at {next_backup_time.strftime('%H:%M:%S')} "
+                            f"(in {hours}h {minutes}m {seconds}s)",
+                            "info"
+                        )
+
                 # Sleep in small chunks so we can respond to signals faster
                 for _ in range(60):  # 60 seconds total, 1-second chunks
                     if not self.running:
@@ -71,8 +87,10 @@ class BackupScheduler:
     def _create_backup(self):
         """Create a scheduled backup."""
         try:
-            backup_path = self.backup_manager.create_backup("quick",
-                                                            custom_name=f"scheduled_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            backup_path = self.backup_manager.create_backup(
+                "quick",
+                custom_name=f"scheduled_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            )
             if backup_path:
                 self.last_backup = time.time()
                 print_status(f"Scheduled backup completed: {backup_path.name}", "success")
@@ -88,13 +106,15 @@ def start_scheduler():
 
     if screen_exists(screen_name):
         print_status("Backup scheduler is already running", "warning")
-        print_status(f"Use 'screen -r {screen_name}' to view or 'mcutil stop-scheduler' to stop", "info")
+        print_status(f"Use 'screen -r {screen_name}' to view or 'mcutil scheduler stop' to stop", "info")
         return False
 
-    # Create a simple scheduler script
+    # Create a simple scheduler script with timestamp tracking
     script_content = f'''#!/usr/bin/env python3
 import sys
 import os
+import json
+from pathlib import Path
 
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -102,10 +122,37 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import Config
 from scheduler import BackupScheduler
 
+# Track scheduler start time
+SCHEDULER_STATE_FILE = Path.home() / ".mcutil_scheduler_state.json"
+
+def save_scheduler_state(start_time):
+    """Save scheduler state to file."""
+    try:
+        with open(SCHEDULER_STATE_FILE, 'w') as f:
+            json.dump({{"start_time": start_time}}, f)
+    except:
+        pass
+
+def cleanup_scheduler_state():
+    """Remove scheduler state file."""
+    try:
+        if SCHEDULER_STATE_FILE.exists():
+            SCHEDULER_STATE_FILE.unlink()
+    except:
+        pass
+
 if __name__ == "__main__":
     config = Config()
     scheduler = BackupScheduler(config)
-    scheduler.start()
+    
+    # Save start time
+    import time
+    save_scheduler_state(time.time())
+    
+    try:
+        scheduler.start()
+    finally:
+        cleanup_scheduler_state()
 '''
 
     # Save scheduler script
@@ -123,12 +170,12 @@ if __name__ == "__main__":
     if run_command(cmd):
         print_status(f"Backup scheduler started in screen '{screen_name}'", "success")
         print_status(f"View with: screen -r {screen_name}", "info")
-        print_status("Stop with: mcutil stop-scheduler", "info")
+        print_status("Stop with: mcutil scheduler stop", "info")
         return True
     else:
         print_status("Failed to start backup scheduler", "error")
         # Clean up the script
-        script_path.unlink(True)
+        script_path.unlink(missing_ok=True)
         return False
 
 
@@ -147,7 +194,11 @@ def stop_scheduler():
 
         # Clean up the scheduler script
         script_path = Path(__file__).parent / "run_scheduler.py"
-        script_path.unlink(True)
+        script_path.unlink(missing_ok=True)
+
+        # Clean up the state file
+        state_file = Path.home() / ".mcutil_scheduler_state.json"
+        state_file.unlink(missing_ok=True)
 
         return True
     else:
@@ -156,7 +207,7 @@ def stop_scheduler():
 
 
 def scheduler_status():
-    """Show scheduler status."""
+    """Show scheduler status with the next backup time."""
     screen_name = "mcutil-scheduler"
 
     print("\nBackup Scheduler Status")
@@ -166,9 +217,64 @@ def scheduler_status():
         print_status("Scheduler: RUNNING", "success")
         print_status(f"Screen session: {screen_name}", "info")
         print_status(f"View logs: screen -r {screen_name}", "info")
+
+        # Try to calculate the next backup time
+        config = Config()
+        interval = config.get("backup_interval", 60) * 60  # Convert to seconds
+
+        # Check for scheduler state file
+        state_file = Path.home() / ".mcutil_scheduler_state.json"
+        if state_file.exists():
+            try:
+                import json
+                with open(state_file, 'r') as f:
+                    state = json.load(f)
+                    start_time = state.get("start_time")
+
+                if start_time:
+                    # Get the most recent backup
+                    backup_manager = BackupManager(config)
+                    backups = backup_manager.list_backups()
+
+                    if backups:
+                        # Find the most recent scheduled backup
+                        scheduled_backups = [b for b in backups if 'scheduled_' in b.get('custom_name', '')]
+                        if scheduled_backups:
+                            latest_backup = scheduled_backups[0]  # Already sorted by date
+                            last_backup_time = latest_backup['created_datetime'].timestamp()
+                            next_backup_time = datetime.fromtimestamp(last_backup_time + interval)
+                            time_until_next = int((last_backup_time + interval) - time.time())
+
+                            if time_until_next > 0:
+                                hours, remainder = divmod(time_until_next, 3600)
+                                minutes, _ = divmod(remainder, 60)
+
+                                print_status(
+                                    f"Next backup: {next_backup_time.strftime('%Y-%m-%d %H:%M:%S')} "
+                                    f"(in {hours}h {minutes}m)",
+                                    "info"
+                                )
+                        else:
+                            # If no scheduled backups yet, assume next is interval from start
+                            next_backup_time = datetime.fromtimestamp(start_time + interval)
+                            time_until_next = int((start_time + interval) - time.time())
+
+                            if time_until_next > 0:
+                                hours, remainder = divmod(time_until_next, 3600)
+                                minutes, _ = divmod(remainder, 60)
+
+                                print_status(
+                                    f"Next backup: {next_backup_time.strftime('%Y-%m-%d %H:%M:%S')} "
+                                    f"(in {hours}h {minutes}m)",
+                                    "info"
+                                )
+            except:
+                pass
+
+        print_status(f"Backup interval: {config.get('backup_interval', 60)} minutes", "info")
     else:
         print_status("Scheduler: STOPPED", "error")
-        print_status("Start with: mcutil start-scheduler", "info")
+        print_status("Start with: mcutil scheduler start", "info")
 
     # Show backup stats
     config = Config()
