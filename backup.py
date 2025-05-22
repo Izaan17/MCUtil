@@ -1,10 +1,11 @@
-"""Backup management for Minecraft server."""
+"""Backup management for Minecraft server with enhanced progress reporting."""
 import json
 import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any
+import time
 
 from utils import (
     print_status, get_directory_size, format_bytes
@@ -80,10 +81,55 @@ class BackupManager:
             return 1
         return max(backup["number"] for backup in metadata["backups"]) + 1
 
+    def _count_files_to_backup(self, backup_type: str) -> tuple:
+        """Count files that will be backed up and estimate total size."""
+        backup_info = self.BACKUP_TYPES[backup_type]
+        file_count = 0
+        total_size = 0
+
+        print_status("Scanning files to backup...", "info")
+
+        if "*" in backup_info["include"]:
+            # Full backup - count everything except excluded
+            exclude_patterns = backup_info.get("exclude", [])
+
+            for item in self.server_dir.rglob("*"):
+                if item.is_file():
+                    relative_path = item.relative_to(self.server_dir)
+                    if not self._should_exclude(str(relative_path), exclude_patterns):
+                        file_count += 1
+                        try:
+                            total_size += item.stat().st_size
+                        except (OSError, IOError):
+                            pass
+
+                        # Show progress every 100 files
+                        if file_count % 100 == 0:
+                            print_status(f"  Scanned {file_count} files ({format_bytes(total_size)})...", "info")
+        else:
+            # Selective backup
+            for item_name in backup_info["include"]:
+                item_path = self.server_dir / item_name
+                if item_path.exists():
+                    if item_path.is_file():
+                        file_count += 1
+                        total_size += item_path.stat().st_size
+                    else:
+                        # Count files in directory
+                        for file_path in item_path.rglob("*"):
+                            if file_path.is_file():
+                                file_count += 1
+                                try:
+                                    total_size += file_path.stat().st_size
+                                except (OSError, IOError):
+                                    pass
+
+        return file_count, total_size
+
     def create_backup(self, backup_type: str = "quick",
                       custom_name: Optional[str] = None) -> Optional[Path]:
         """
-        Create a server backup with metadata tracking.
+        Create a server backup with metadata tracking and progress reporting.
 
         Args:
             backup_type: Type of backup ('quick' or 'full')
@@ -92,6 +138,8 @@ class BackupManager:
         Returns:
             Path to the created backup file or None if failed
         """
+        start_time = time.time()
+
         if backup_type not in self.BACKUP_TYPES:
             print_status(f"Invalid backup type: {backup_type}", "error")
             return None
@@ -116,21 +164,27 @@ class BackupManager:
 
         backup_path = date_dir / backup_filename
 
-        print_status(f"Creating {backup_type} backup: {backup_info['description']}")
-        print_status(f"Backup location: {backup_path}")
+        print_status(f"=== Starting {backup_type} backup ===", "info")
+        print_status(f"Type: {backup_info['description']}", "info")
+        print_status(f"Destination: {backup_path}", "info")
 
         try:
-            # Estimate backup size
-            total_size = self._estimate_backup_size(backup_type)
-            print_status(f"Estimated size: {format_bytes(total_size)}")
+            # Count files and estimate size
+            file_count, estimated_size = self._count_files_to_backup(backup_type)
+            print_status(f"Total files to backup: {file_count}", "info")
+            print_status(f"Estimated size: {format_bytes(estimated_size)}", "info")
 
-            # Create the backup
+            # Create the backup with progress reporting
+            print_status("Creating backup archive...", "info")
             with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                files_added = self._add_files_to_zip(zipf, backup_type)
+                files_added = self._add_files_to_zip_with_progress(
+                    zipf, backup_type, file_count, estimated_size
+                )
 
             # Verify backup was created
             if backup_path.exists():
                 actual_size = backup_path.stat().st_size
+                compression_ratio = 100 * (1 - actual_size / estimated_size) if estimated_size > 0 else 0
 
                 # Create metadata entry
                 backup_metadata = {
@@ -149,11 +203,20 @@ class BackupManager:
                 metadata["backups"].append(backup_metadata)
                 self._save_metadata(date_dir, metadata)
 
-                print_status(f"Backup created successfully!", "success")
-                print_status(f"Final size: {format_bytes(actual_size)}")
-                print_status(f"Files included: {files_added}")
+                # Calculate duration
+                duration = time.time() - start_time
+                minutes, seconds = divmod(int(duration), 60)
+
+                print_status("=== Backup completed successfully! ===", "success")
+                print_status(f"Files backed up: {files_added}", "success")
+                print_status(f"Original size: {format_bytes(estimated_size)}", "info")
+                print_status(f"Compressed size: {format_bytes(actual_size)}", "info")
+                print_status(f"Compression ratio: {compression_ratio:.1f}%", "info")
+                print_status(f"Time taken: {minutes}m {seconds}s", "info")
+                print_status(f"Backup saved as: {backup_filename}", "success")
 
                 # Clean up old backups
+                print_status("Checking for old backups to clean up...", "info")
                 self._cleanup_old_backups()
 
                 return backup_path
@@ -169,6 +232,109 @@ class BackupManager:
             except FileNotFoundError:
                 pass
             return None
+
+    def _add_files_to_zip_with_progress(self, zipf: zipfile.ZipFile, backup_type: str,
+                                        total_files: int, total_size: int) -> int:
+        """Add files to zip archive with progress reporting."""
+        backup_info = self.BACKUP_TYPES[backup_type]
+        files_added = 0
+        bytes_processed = 0
+        last_progress_time = time.time()
+
+        def update_progress(current_file: str = None):
+            """Update progress display."""
+            nonlocal last_progress_time
+            current_time = time.time()
+
+            # Update every 0.5 seconds
+            if current_time - last_progress_time >= 0.5 or files_added == total_files:
+                if total_files > 0:
+                    progress_percent = (files_added / total_files) * 100
+                else:
+                    progress_percent = 0
+
+                if total_size > 0:
+                    size_percent = (bytes_processed / total_size) * 100
+                else:
+                    size_percent = 0
+
+                status_msg = f"  Progress: {files_added}/{total_files} files ({progress_percent:.1f}%)"
+                status_msg += f" | {format_bytes(bytes_processed)}/{format_bytes(total_size)} ({size_percent:.1f}%)"
+
+                if current_file:
+                    # Truncate long filenames
+                    display_name = current_file if len(current_file) <= 50 else "..." + current_file[-47:]
+                    status_msg += f" | Current: {display_name}"
+
+                print(f"\r{status_msg}", end='', flush=True)
+                last_progress_time = current_time
+
+        if "*" in backup_info["include"]:
+            # Full backup - add everything except excluded items
+            exclude_patterns = backup_info.get("exclude", [])
+
+            for item in self.server_dir.rglob("*"):
+                if item.is_file():
+                    # Check if the file should be excluded
+                    relative_path = item.relative_to(self.server_dir)
+                    if not self._should_exclude(str(relative_path), exclude_patterns):
+                        try:
+                            file_size = item.stat().st_size
+                            zipf.write(item, relative_path)
+                            files_added += 1
+                            bytes_processed += file_size
+                            update_progress(str(relative_path))
+                        except (OSError, IOError) as e:
+                            print()  # New line after progress
+                            print_status(f"Warning: Could not backup {relative_path}: {e}", "warning")
+        else:
+            # Selective backup - add only specified items
+            for item_name in backup_info["include"]:
+                item_path = self.server_dir / item_name
+                if item_path.exists():
+                    added, size = self._add_item_to_zip_with_progress(
+                        zipf, item_path, item_name, update_progress
+                    )
+                    files_added += added
+                    bytes_processed += size
+                else:
+                    print()  # New line after progress
+                    print_status(f"Warning: {item_name} not found", "warning")
+
+        print()  # Final newline after progress bar
+        return files_added
+
+    def _add_item_to_zip_with_progress(self, zipf: zipfile.ZipFile, item_path: Path,
+                                       archive_name: str, progress_callback) -> tuple:
+        """Add a single item to the zip with progress updates."""
+        files_added = 0
+        bytes_added = 0
+
+        if item_path.is_file():
+            try:
+                file_size = item_path.stat().st_size
+                zipf.write(item_path, archive_name)
+                files_added = 1
+                bytes_added = file_size
+                progress_callback(archive_name)
+            except (OSError, IOError) as e:
+                print()  # New line after progress
+                print_status(f"Warning: Could not backup {archive_name}: {e}", "warning")
+        elif item_path.is_dir():
+            for file_path in item_path.rglob("*"):
+                if file_path.is_file():
+                    relative_path = file_path.relative_to(self.server_dir)
+                    try:
+                        file_size = file_path.stat().st_size
+                        zipf.write(file_path, relative_path)
+                        files_added += 1
+                        bytes_added += file_size
+                        progress_callback(str(relative_path))
+                    except (OSError, IOError) as e:
+                        print()  # New line after progress
+                        print_status(f"Warning: Could not backup {relative_path}: {e}", "warning")
+
+        return files_added, bytes_added
 
     def _estimate_backup_size(self, backup_type: str) -> int:
         """Estimate the size of the backup."""
@@ -255,25 +421,31 @@ class BackupManager:
         if self.retention <= 0:
             return
 
-        print_status(f"Cleaning up old backups (keeping {self.retention} most recent days)")
+        print_status(f"Cleaning up old backups (keeping {self.retention} most recent days)...", "info")
 
         # Get all date directories
         date_dirs = [d for d in self.backup_dir.iterdir()
                      if d.is_dir() and len(d.name) == 10 and d.name.count('-') == 2]
 
         if len(date_dirs) <= self.retention:
+            print_status("No old backups to clean up", "info")
             return
 
         # Sort by date (newest first)
         date_dirs.sort(key=lambda x: x.name, reverse=True)
 
         # Remove old directories
+        removed_count = 0
         for old_dir in date_dirs[self.retention:]:
             try:
                 shutil.rmtree(old_dir)
-                print_status(f"Removed old backup directory: {old_dir.name}")
+                print_status(f"  Removed old backup directory: {old_dir.name}", "info")
+                removed_count += 1
             except OSError as e:
-                print_status(f"Warning: Could not remove {old_dir}: {e}", "warning")
+                print_status(f"  Warning: Could not remove {old_dir}: {e}", "warning")
+
+        if removed_count > 0:
+            print_status(f"Cleaned up {removed_count} old backup directories", "success")
 
     def list_backups(self) -> List[Dict[str, Any]]:
         """List all available backups with metadata."""
