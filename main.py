@@ -1,120 +1,318 @@
+"""
+MCUtil - Simple Minecraft Server Manager
+
+A clean, reliable tool for managing Minecraft servers with automated backups.
+"""
+
 import argparse
+import sys
 
-from backup import backup_world, list_backup_types
-from config import load_config, save_config, DEFAULT_CONFIG
-from monitor import watch_server, start_scheduled_backups, stop_scheduled_backups, backup_scheduler_status
-from server import start_server, stop_server, restart_server, send_command, show_status
-from utils import print_header
+from backup import BackupManager
+from config import Config
+from scheduler import start_scheduler, stop_scheduler, scheduler_status
+from server import MinecraftServer
+from utils import print_status, confirm
 
 
-def setup_config():
-    print_header("Setup Configuration")
-    print("Setting up MCUtil configuration...")
-    print("Press Enter to use default values shown in brackets.")
-    print()
+def cmd_setup():
+    """Setup MCUtil configuration."""
+    config = Config()
+    config.setup_interactive()
 
-    config = {}
-    for key, default in DEFAULT_CONFIG.items():
-        if key.startswith("AUTO_BACKUP_") and key.endswith("_INTERVAL"):
-            # Format backup interval descriptions
-            backup_type = key.replace("AUTO_BACKUP_", "").replace("_INTERVAL", "").lower()
-            hours = int(default) // 60
-            days = hours // 24
-            if days > 0:
-                time_desc = f"{days} day{'s' if days != 1 else ''}"
-            else:
-                time_desc = f"{hours} hour{'s' if hours != 1 else ''}"
-            prompt = f"{backup_type.capitalize()} backup interval - minutes [{default} = {time_desc}]: "
-        elif key.startswith("MAX_") and key.endswith("_BACKUPS"):
-            backup_type = key.replace("MAX_", "").replace("_BACKUPS", "").lower()
-            prompt = f"Max {backup_type} backups to keep [{default}]: "
+
+def cmd_server(args):
+    """Handle server commands."""
+    config = Config()
+
+    if not config.validate():
+        print_status("Configuration is invalid. Run 'mcutil setup' first.", "error")
+        return False
+
+    server = MinecraftServer(config)
+
+    if args.server_action == "start":
+        return server.start(gui=args.gui, memory=args.memory)
+    elif args.server_action == "stop":
+        return server.stop()
+    elif args.server_action == "restart":
+        return server.restart(gui=args.gui, memory=args.memory)
+    elif args.server_action == "status":
+        server.print_status()
+        return True
+    elif args.server_action == "watch":
+        server.watch()
+        return True
+    return None
+
+
+def cmd_backup(args):
+    """Handle backup commands."""
+    config = Config()
+
+    if not config.validate():
+        print_status("Configuration is invalid. Run 'mcutil setup' first.", "error")
+        return False
+
+    backup_manager = BackupManager(config)
+
+    if args.backup_action == "create":
+        backup_path = backup_manager.create_backup(
+            backup_type=args.type,
+            custom_name=args.name
+        )
+        return backup_path is not None
+
+    elif args.backup_action == "list":
+        backup_manager.print_backup_list()
+        return True
+
+    elif args.backup_action == "delete":
+        if not args.name:
+            print_status("Backup name is required for delete", "error")
+            return False
+
+        # Confirm deletion
+        if confirm(f"Delete backup '{args.name}'?"):
+            return backup_manager.delete_backup(args.name)
         else:
-            prompt = f"{key} [{default}]: "
+            print_status("Deletion cancelled", "info")
+            return True
 
-        value = input(prompt).strip()
-        config[key] = value or default
+    elif args.backup_action == "info":
+        backup_manager.print_backup_list()
+        stats = backup_manager.get_backup_stats()
 
-    save_config(config)
-    print()
-    print("Configuration complete! You can now use MCUtil commands.")
+        print("\nBackup Statistics")
+        print("=" * 20)
+        print(f"Total backups: {stats['total_backups']}")
+        print(f"Quick backups: {stats['quick_backups']}")
+        print(f"Full backups: {stats['full_backups']}")
+        print(f"Total size: {stats['total_size_formatted']}")
+        if stats['latest_backup']:
+            print(f"Latest: {stats['latest_backup'].strftime('%Y-%m-%d %H:%M:%S')}")
+
+        return True
+    return None
+
+
+def cmd_scheduler(args):
+    """Handle scheduler commands."""
+    config = Config()
+
+    if not config.validate():
+        print_status("Configuration is invalid. Run 'mcutil setup' first.", "error")
+        return False
+
+    if args.scheduler_action == "start":
+        return start_scheduler()
+    elif args.scheduler_action == "stop":
+        return stop_scheduler()
+    elif args.scheduler_action == "status":
+        scheduler_status()
+        return True
+    return None
+
+
+def cmd_send(args):
+    """Send command to the server."""
+    config = Config()
+
+    if not config.validate():
+        print_status("Configuration is invalid. Run 'mcutil setup' first.", "error")
+        return False
+
+    server = MinecraftServer(config)
+    return server.send_command(args.command)
+
+
+def cmd_config(args):
+    """Handle configuration commands."""
+    config = Config()
+
+    if args.config_action == "show":
+        print("\nCurrent Configuration")
+        print("=" * 25)
+        for key, value in config.data.items():
+            print(f"{key}: {value}")
+        return True
+
+    elif args.config_action == "set":
+        if not args.key or not args.value:
+            print_status("Both key and value are required", "error")
+            return False
+
+        config.set(args.key, args.value)
+        if config.save():
+            print_status(f"Set {args.key} = {args.value}", "success")
+            return True
+        else:
+            print_status("Failed to save configuration", "error")
+            return False
+
+    elif args.config_action == "validate":
+        if config.validate():
+            print_status("Configuration is valid", "success")
+            return True
+        else:
+            return False
+    return None
+
+
+def print_help():
+    """Print help information."""
+    help_text = """
+MCUtil - Simple Minecraft Server Manager
+
+SETUP:
+  mcutil setup                 Interactive configuration setup
+
+SERVER:
+  mcutil start                 Start the server
+  mcutil start --gui           Start with GUI
+  mcutil start --memory 8G     Start with custom memory
+  mcutil stop                  Stop the server
+  mcutil restart               Restart the server
+  mcutil status                Show server status
+  mcutil watch                 Auto-restart if crashed
+  mcutil send "command"        Send command to server
+
+BACKUPS:
+  mcutil backup                Create quick backup
+  mcutil backup --type full    Create full backup
+  mcutil backup --name myname  Create backup with custom name
+  mcutil backup list           List all backups
+  mcutil backup delete name    Delete a backup
+  mcutil backup info           Show backup statistics
+
+SCHEDULER:
+  mcutil scheduler start       Start automatic backups
+  mcutil scheduler stop        Stop automatic backups
+  mcutil scheduler status      Show scheduler status
+
+CONFIGURATION:
+  mcutil config show           Show current configuration
+  mcutil config set key value Set configuration value
+  mcutil config validate      Validate configuration
+
+Examples:
+  mcutil setup                 # First-time setup
+  mcutil start                 # Start server
+  mcutil scheduler start       # Enable auto-backups
+  mcutil backup --type full    # Manual full backup
+  mcutil send "say Hello!"     # Send chat message
+"""
+    print(help_text)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Minecraft Server Utility")
-    subparsers = parser.add_subparsers(dest="action")
+    """Main entry point."""
+    if len(sys.argv) == 1:
+        print_help()
+        return
+
+    parser = argparse.ArgumentParser(
+        description="MCUtil - Simple Minecraft Server Manager",
+        add_help=False
+    )
+
+    # Add custom help
+    parser.add_argument('-h', '--help', action='store_true', help='Show this help message')
+
+    subparsers = parser.add_subparsers(dest='command')
 
     # Setup command
-    subparsers.add_parser("setup", help="Setup configuration")
+    subparsers.add_parser('setup', help='Setup configuration')
 
-    # Server control commands
-    start_parser = subparsers.add_parser("start", help="Start the server")
-    start_parser.add_argument("--gui", action="store_true", help="Start with GUI")
-    start_parser.add_argument("--ram", help="RAM override (e.g. 2G)")
+    # Server commands
+    server_parser = subparsers.add_parser('server', help='Server management')
+    server_parser.add_argument('server_action', choices=['start', 'stop', 'restart', 'status', 'watch'])
+    server_parser.add_argument('--gui', action='store_true', help='Start with GUI')
+    server_parser.add_argument('--memory', help='Override memory setting (e.g., 8G)')
 
-    restart_parser = subparsers.add_parser("restart", help="Restart the server")
-    restart_parser.add_argument("--gui", action="store_true", help="Restart with GUI")
-    restart_parser.add_argument("--ram", help="RAM override")
+    # Shorthand server commands
+    start_parser = subparsers.add_parser('start', help='Start server')
+    start_parser.add_argument('--gui', action='store_true', help='Start with GUI')
+    start_parser.add_argument('--memory', help='Override memory setting')
 
-    subparsers.add_parser("stop", help="Stop the server")
-    subparsers.add_parser("status", help="Show server status")
+    subparsers.add_parser('stop', help='Stop server')
+
+    restart_parser = subparsers.add_parser('restart', help='Restart server')
+    restart_parser.add_argument('--gui', action='store_true', help='Start with GUI')
+    restart_parser.add_argument('--memory', help='Override memory setting')
+
+    subparsers.add_parser('status', help='Show server status')
+    subparsers.add_parser('watch', help='Watch server and auto-restart')
+
+    # Send command
+    send_parser = subparsers.add_parser('send', help='Send command to server')
+    send_parser.add_argument('command', help='Command to send')
 
     # Backup commands
-    backup_parser = subparsers.add_parser("backup", help="Backup the server")
-    backup_parser.add_argument("--type",
-                               choices=["regular", "medium", "hard"],
-                               default="regular",
-                               help="Backup type: regular (standard), medium (comprehensive), hard (complete)")
-    backup_parser.add_argument("--include", help="Items to include (comma-separated, overrides type)")
-    backup_parser.add_argument("--exclude", help="Items to exclude from the selected type")
+    backup_parser = subparsers.add_parser('backup', help='Backup management')
+    backup_parser.add_argument('backup_action', nargs='?', default='create',
+                               choices=['create', 'list', 'delete', 'info'])
+    backup_parser.add_argument('--type', choices=['quick', 'full'], default='quick',
+                               help='Backup type')
+    backup_parser.add_argument('--name', help='Backup name (for create/delete)')
 
-    subparsers.add_parser("backup-types", help="List available backup types and their contents")
+    # Scheduler commands
+    scheduler_parser = subparsers.add_parser('scheduler', help='Backup scheduler')
+    scheduler_parser.add_argument('scheduler_action', choices=['start', 'stop', 'status'])
 
-    # Enhanced backup scheduler commands
-    subparsers.add_parser("schedule-backups", help="Start automatic multi-type backup scheduler")
-    subparsers.add_parser("stop-backups", help="Stop automatic backup scheduler")
-    subparsers.add_parser("backup-status", help="Show backup scheduler status and statistics")
-
-    # Monitoring commands
-    subparsers.add_parser("watch", help="Start server watchdog")
-
-    # Server command
-    cmd_parser = subparsers.add_parser("cmd", help="Send command to server")
-    cmd_parser.add_argument("command", help="Command to send")
+    # Config commands
+    config_parser = subparsers.add_parser('config', help='Configuration management')
+    config_parser.add_argument('config_action', choices=['show', 'set', 'validate'])
+    config_parser.add_argument('key', nargs='?', help='Configuration key')
+    config_parser.add_argument('value', nargs='?', help='Configuration value')
 
     args = parser.parse_args()
 
-    if args.action == "setup":
-        setup_config()
-    elif args.action == "backup-types":
-        list_backup_types()
-    else:
-        cfg = load_config()
-        match args.action:
-            case "start":
-                start_server(cfg, gui=args.gui, ram=args.ram)
-            case "stop":
-                stop_server(cfg)
-            case "restart":
-                restart_server(cfg, gui=args.gui, ram=args.ram)
-            case "status":
-                show_status(cfg)
-            case "backup":
-                backup_world(cfg,
-                             backup_type=args.type,
-                             include_list=args.include,
-                             exclude_list=args.exclude)
-            case "watch":
-                watch_server(cfg)
-            case "schedule-backups":
-                start_scheduled_backups(cfg)
-            case "stop-backups":
-                stop_scheduled_backups(cfg)
-            case "backup-status":
-                backup_scheduler_status(cfg)
-            case "cmd":
-                send_command(cfg, args.command)
-            case _:
-                parser.print_help()
+    # Handle help
+    if args.help or not args.command:
+        print_help()
+        return
+
+    # Route commands
+    success = True
+
+    try:
+        if args.command == 'setup':
+            cmd_setup()
+
+        elif args.command == 'server':
+            success = cmd_server(args)
+
+        elif args.command in ['start', 'stop', 'restart', 'status', 'watch']:
+            # Shorthand server commands
+            server_args = argparse.Namespace()
+            server_args.server_action = args.command
+            server_args.gui = getattr(args, 'gui', False)
+            server_args.memory = getattr(args, 'memory', None)
+            success = cmd_server(server_args)
+
+        elif args.command == 'send':
+            success = cmd_send(args)
+
+        elif args.command == 'backup':
+            success = cmd_backup(args)
+
+        elif args.command == 'scheduler':
+            success = cmd_scheduler(args)
+
+        elif args.command == 'config':
+            success = cmd_config(args)
+
+        else:
+            print_help()
+
+    except KeyboardInterrupt:
+        print_status("\nOperation cancelled", "info")
+        success = False
+    except Exception as e:
+        print_status(f"Unexpected error: {e}", "error")
+        success = False
+
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

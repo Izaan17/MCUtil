@@ -1,277 +1,282 @@
-import os
-import shutil
-import glob
+"""Backup management for Minecraft server."""
+import zipfile
 from datetime import datetime
 from pathlib import Path
+from typing import List, Optional, Dict, Any
 
-from rich.progress import Progress
+from utils import (
+    print_status, get_directory_size, format_bytes, cleanup_old_files
+)
 
-from utils import print_info, print_success, print_warning, print_error
 
-# Define backup types with their respective items
-BACKUP_TYPES = {
-    "regular": {
-        "description": "Standard backup with worlds, and config",
-        "items": [
-            "world",
-            "world_nether",
-            "world_the_end",
-            "server.properties",
-            "banned-ips.json",
-            "banned-players.json",
-            "ops.json",
-            "whitelist.json",
-            "config"
-        ]
-    },
-    "medium": {
-        "description": "Comprehensive backup including user configs and caches",
-        "items": [
-            "world",
-            "world_nether",
-            "world_the_end",
-            "server.properties",
-            "banned-ips.json",
-            "banned-players.json",
-            "ops.json",
-            "whitelist.json",
-            "mods",
-            "config",
-            "defaultconfigs",
-            "user_jvm_args.txt",
-            "usercache.json",
-            "usernamecache.json",
-            "eula.txt"
-        ]
-    },
-    "hard": {
-        "description": "Complete backup with all server files",
-        "items": [
-            "all"
-        ]
+class BackupManager:
+    """Manages server backups."""
+
+    # Define what gets backed up for each type
+    BACKUP_TYPES = {
+        "quick": {
+            "description": "Essential files only (worlds, configs)",
+            "include": [
+                "world", "world_nether", "world_the_end",
+                "server.properties", "ops.json", "whitelist.json",
+                "banned-players.json", "banned-ips.json"
+            ]
+        },
+        "full": {
+            "description": "Complete server backup",
+            "include": ["*"],  # Everything
+            "exclude": [
+                "logs", "crash-reports", "*.log", ".DS_STORE"
+            ]
+        }
     }
-}
 
+    def __init__(self, config):
+        self.config = config
+        self.server_dir = Path(config.get("server_dir"))
+        self.backup_dir = Path(config.get("backup_dir"))
+        self.retention = config.get("backup_retention", 7)
 
-def get_backup_size_estimate(cfg, items):
-    """Estimate backup size by checking file/folder sizes"""
-    total_size = 0
-    for item in items:
-        path = os.path.join(cfg["SERVER_DIR"], item)
-        if os.path.exists(path):
-            if os.path.isfile(path):
-                total_size += os.stat(path).st_size
-            elif os.path.isdir(path):
-                for dirpath, dirnames, filenames in os.walk(path):
-                    for filename in filenames:
-                        filepath = os.path.join(dirpath, filename)
-                        try:
-                            total_size += os.stat(filepath).st_size
-                        except (OSError, IOError):
-                            continue
-    return total_size
+    def create_backup(self, backup_type: str = "quick",
+                      custom_name: Optional[str] = None) -> Optional[Path]:
+        """
+        Create a server backup.
+        
+        Args:
+            backup_type: Type of backup ('quick' or 'full')
+            custom_name: Custom backup name
+        
+        Returns:
+            Path to the created backup file or None if failed
+        """
+        if backup_type not in self.BACKUP_TYPES:
+            print_status(f"Invalid backup type: {backup_type}", "error")
+            return None
 
+        if not self.server_dir.exists():
+            print_status(f"Server directory not found: {self.server_dir}", "error")
+            return None
 
-def format_size(size_bytes):
-    """Convert bytes to human readable format"""
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.1f} TB"
+        backup_info = self.BACKUP_TYPES[backup_type]
 
+        # Create a backup directory
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
 
-def cleanup_old_backups(cfg, backup_type):
-    """Clean up old backups based on retention policy"""
-    type_backup_dir = os.path.join(cfg["BACKUP_DIR"], backup_type)
+        # Generate backup filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        name = custom_name or f"minecraft_backup_{backup_type}_{timestamp}"
+        backup_path = self.backup_dir / f"{name}.zip"
 
-    # Get retention limit for this backup type
-    retention_key = f"MAX_{backup_type.upper()}_BACKUPS"
-    max_backups = int(cfg.get(retention_key, cfg.get("MAX_BACKUPS", 5)))
+        print_status(f"Creating {backup_type} backup: {backup_info['description']}")
+        print_status(f"Backup location: {backup_path}")
 
-    if not os.path.exists(type_backup_dir):
-        return
-
-    # Find all backup files for this type
-    backup_pattern = os.path.join(type_backup_dir, "**", f"server_backup_{backup_type}_*.zip")
-    all_backups = glob.glob(backup_pattern, recursive=True)
-
-    if len(all_backups) <= max_backups:
-        return
-
-    # Sort by modification time (oldest first)
-    all_backups.sort(key=os.path.getmtime)
-
-    # Remove oldest backups
-    backups_to_remove = all_backups[:-max_backups]
-    removed_count = 0
-
-    for backup_file in backups_to_remove:
         try:
-            os.remove(backup_file)
-            removed_count += 1
+            # Estimate backup size
+            total_size = self._estimate_backup_size(backup_type)
+            print_status(f"Estimated size: {format_bytes(total_size)}")
 
-            # Remove empty date directories
-            date_dir = os.path.dirname(backup_file)
-            if not os.listdir(date_dir):
-                os.rmdir(date_dir)
+            # Create the backup
+            with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                files_added = self._add_files_to_zip(zipf, backup_type)
+
+            # Verify backup was created
+            if backup_path.exists():
+                actual_size = backup_path.stat().st_size
+                print_status(f"Backup created successfully!", "success")
+                print_status(f"Final size: {format_bytes(actual_size)}")
+                print_status(f"Files included: {files_added}")
+
+                # Clean up old backups
+                self._cleanup_old_backups()
+
+                return backup_path
+            else:
+                print_status("Backup file was not created", "error")
+                return None
 
         except Exception as e:
-            print_warning(f"Failed to remove old backup {backup_file}: {e}")
+            print_status(f"Backup failed: {e}", "error")
+            # Clean up partial backup
+            if backup_path.exists():
+                try:
+                    backup_path.unlink()
+                except FileNotFoundError:
+                    pass
+            return None
 
-    if removed_count > 0:
-        print_info(f"Cleaned up {removed_count} old {backup_type} backup(s)")
+    def _estimate_backup_size(self, backup_type: str) -> int:
+        """Estimate the size of the backup."""
+        backup_info = self.BACKUP_TYPES[backup_type]
+        total_size = 0
 
-
-def backup_world(cfg, backup_type="regular", include_list=None, exclude_list=None):
-    """
-    Create a backup of the Minecraft server
-
-    Args:
-        cfg: Configuration dictionary
-        backup_type: Type of backup (regular, medium, hard)
-        include_list: Custom comma-separated list of items to include
-        exclude_list: Comma-separated list of items to exclude
-    """
-
-    # Validate backup type
-    if backup_type not in BACKUP_TYPES:
-        print_error(f"Invalid backup type '{backup_type}'. Available types: {', '.join(BACKUP_TYPES.keys())}")
-        return False
-
-    backup_info = BACKUP_TYPES[backup_type]
-    print_info(f"Starting {backup_type} backup...")
-    print_info(f"Type: {backup_info['description']}")
-
-    # Create a date-based folder structure with type-specific organization
-    now = datetime.now()
-    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
-    date_folder = now.strftime("%Y-%m-%d")
-
-    # Type-specific backup directory structure
-    type_backup_dir = os.path.join(cfg["BACKUP_DIR"], backup_type)
-    date_backup_dir = os.path.join(type_backup_dir, date_folder)
-
-    backup_name = f"server_backup_{backup_type}_{timestamp}"
-    backup_path = os.path.join(date_backup_dir, backup_name)
-    temp_dir = os.path.join(date_backup_dir, f"_temp_backup_{timestamp}")
-
-    # Determine what to back up
-    if include_list:
-        include_items = include_list.split(',')
-        print_info(f"Using custom include list: {include_list}")
-    else:
-        if backup_info["items"] == ["all"]:
-            include_items = os.listdir(cfg["SERVER_DIR"])
+        if "*" in backup_info["include"]:
+            # Full backup - calculate entire directory
+            total_size = get_directory_size(self.server_dir)
         else:
-            include_items = backup_info["items"].copy()
+            # Calculate size of specific items
+            for item in backup_info["include"]:
+                item_path = self.server_dir / item
+                if item_path.exists():
+                    if item_path.is_file():
+                        total_size += item_path.stat().st_size
+                    else:
+                        total_size += get_directory_size(item_path)
 
-    # Apply exclusions
-    if exclude_list:
-        exclude_items = exclude_list.split(',')
-        include_items = [item.strip() for item in include_items if item.strip() not in exclude_items]
-        print_info(f"Excluding: {exclude_list}")
+        return total_size
 
-    print_info(f"Items to backup: {', '.join(include_items)}")
-    print_info(f"Backup will be saved in: {backup_type}/{date_folder}")
+    def _add_files_to_zip(self, zipf: zipfile.ZipFile, backup_type: str) -> int:
+        """Add files to zip archive based on backup type."""
+        backup_info = self.BACKUP_TYPES[backup_type]
+        files_added = 0
 
-    # Estimate backup size
-    estimated_size = get_backup_size_estimate(cfg, include_items)
-    print_info(f"Estimated backup size: {format_size(estimated_size)}")
+        if "*" in backup_info["include"]:
+            # Full backup - add everything except excluded items
+            exclude_patterns = backup_info.get("exclude", [])
 
-    try:
-        # Create backup directory structure
-        os.makedirs(cfg["BACKUP_DIR"], exist_ok=True)
-        os.makedirs(type_backup_dir, exist_ok=True)
-        os.makedirs(date_backup_dir, exist_ok=True)
-        os.makedirs(temp_dir, exist_ok=True)
-
-        copied_items = []
-        missing_items = []
-
-        with Progress() as progress:
-            task = progress.add_task("[green]Backing up server files...", total=len(include_items) + 3)
-
-            for item in include_items:
-                src = os.path.join(cfg["SERVER_DIR"], item.strip())
-                dst = os.path.join(temp_dir, item.strip())
-
-                if os.path.exists(src):
-                    try:
-                        if os.path.isdir(src):
-                            shutil.copytree(src, dst, dirs_exist_ok=True)
-                        else:
-                            os.makedirs(os.path.dirname(dst), exist_ok=True)
-                            shutil.copy2(src, dst)
-                        copied_items.append(item.strip())
-                    except Exception as e:
-                        print_warning(f"Failed to copy {item}: {e}")
-                        missing_items.append(item.strip())
+            for item in self.server_dir.rglob("*"):
+                if item.is_file():
+                    # Check if the file should be excluded
+                    relative_path = item.relative_to(self.server_dir)
+                    if not self._should_exclude(str(relative_path), exclude_patterns):
+                        try:
+                            zipf.write(item, relative_path)
+                            files_added += 1
+                        except (OSError, IOError) as e:
+                            print_status(f"Warning: Could not backup {relative_path}: {e}", "warning")
+        else:
+            # Selective backup - add only specified items
+            for item_name in backup_info["include"]:
+                item_path = self.server_dir / item_name
+                if item_path.exists():
+                    files_added += self._add_item_to_zip(zipf, item_path, item_name)
                 else:
-                    print_warning(f"Missing: {item}")
-                    missing_items.append(item.strip())
+                    print_status(f"Warning: {item_name} not found", "warning")
 
-                progress.update(task, advance=1)
+        return files_added
 
-            progress.update(task, description="[yellow]Creating ZIP archive...")
-            shutil.make_archive(backup_path, 'zip', temp_dir)
-            progress.update(task, advance=1)
+    def _add_item_to_zip(self, zipf: zipfile.ZipFile, item_path: Path, archive_name: str) -> int:
+        """Add a single item (file or directory) to the zip."""
+        files_added = 0
 
-            progress.update(task, description="[yellow]Cleaning up temporary files...")
-            shutil.rmtree(temp_dir)
-            progress.update(task, advance=1)
+        if item_path.is_file():
+            try:
+                zipf.write(item_path, archive_name)
+                files_added = 1
+            except (OSError, IOError) as e:
+                print_status(f"Warning: Could not backup {archive_name}: {e}", "warning")
+        elif item_path.is_dir():
+            for file_path in item_path.rglob("*"):
+                if file_path.is_file():
+                    relative_path = file_path.relative_to(self.server_dir)
+                    try:
+                        zipf.write(file_path, relative_path)
+                        files_added += 1
+                    except (OSError, IOError) as e:
+                        print_status(f"Warning: Could not backup {relative_path}: {e}", "warning")
 
-        # Get the final backup size
-        final_backup_path = f"{backup_path}.zip"
-        actual_size = os.path.getsize(final_backup_path)
+        return files_added
 
-        print_success(f"Backup completed successfully!")
-        print_success(f"Backup saved as: {final_backup_path}")
-        print_success(f"Final size: {format_size(actual_size)}")
-        print_info(f"Items backed up: {len(copied_items)}")
-
-        if missing_items:
-            print_warning(f"Missing items: {len(missing_items)} - {', '.join(missing_items)}")
-
-        # Clean up old backups
-        cleanup_old_backups(cfg, backup_type)
-
-        return True
-
-    except Exception as e:
-        print_error(f"Backup failed: {e}")
-        # Clean up the temp directory if it exists
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
+    @staticmethod
+    def _should_exclude(path: str, exclude_patterns: List[str]) -> bool:
+        """Check if a path should be excluded based on patterns."""
+        for pattern in exclude_patterns:
+            if pattern in path or path.endswith(pattern.replace("*", "")):
+                return True
         return False
 
+    def _cleanup_old_backups(self):
+        """Remove old backup files beyond the retention limit."""
+        if self.retention <= 0:
+            return
 
-def list_backup_types():
-    """Print information about available backup types"""
-    print_info("Available backup types:")
-    for backup_type, info in BACKUP_TYPES.items():
-        print_info(f"  {backup_type}: {info['description']}")
-        print_info(f"    Items: {', '.join(info['items'])}")
-        print_info("")
+        print_status(f"Cleaning up old backups (keeping {self.retention} most recent)")
+        cleanup_old_files(self.backup_dir, "*.zip", self.retention)
 
+    def list_backups(self) -> List[Dict[str, Any]]:
+        """List all available backups."""
+        if not self.backup_dir.exists():
+            return []
 
-def get_backup_stats(cfg):
-    """Get statistics about existing backups"""
-    backup_dir = Path(cfg["BACKUP_DIR"])
-    stats = {}
+        backups = []
+        for backup_file in self.backup_dir.glob("*.zip"):
+            try:
+                stat = backup_file.stat()
+                backups.append({
+                    "name": backup_file.name,
+                    "path": backup_file,
+                    "size": stat.st_size,
+                    "size_formatted": format_bytes(stat.st_size),
+                    "created": datetime.fromtimestamp(stat.st_mtime),
+                    "type": self._detect_backup_type(backup_file.name)
+                })
+            except OSError:
+                continue
 
-    for backup_type in BACKUP_TYPES.keys():
-        type_dir = backup_dir / backup_type
-        if type_dir.exists():
-            backup_files = list(type_dir.glob("*/server_backup_*.zip"))
-            total_size = sum(f.stat().st_size for f in backup_files if f.exists())
-            stats[backup_type] = {
-                "count": len(backup_files),
-                "total_size": total_size,
-                "latest": max((f.stat().st_mtime for f in backup_files), default=0)
-            }
+        # Sort by creation time (newest first)
+        backups.sort(key=lambda x: x["created"], reverse=True)
+        return backups
+
+    @staticmethod
+    def _detect_backup_type(filename: str) -> str:
+        """Detect backup type from filename."""
+        if "_quick_" in filename:
+            return "quick"
+        elif "_full_" in filename:
+            return "full"
         else:
-            stats[backup_type] = {"count": 0, "total_size": 0, "latest": 0}
+            return "unknown"
 
-    return stats
+    def print_backup_list(self):
+        """Print a formatted list of backups."""
+        backups = self.list_backups()
+
+        if not backups:
+            print_status("No backups found", "warning")
+            return
+
+        print("\nAvailable Backups")
+        print("=" * 50)
+
+        for backup in backups:
+            created_str = backup["created"].strftime("%Y-%m-%d %H:%M:%S")
+            print(f"{backup['name']}")
+            print(f"  Type: {backup['type']}")
+            print(f"  Size: {backup['size_formatted']}")
+            print(f"  Created: {created_str}")
+            print()
+
+    def delete_backup(self, backup_name: str) -> bool:
+        """Delete a specific backup."""
+        backup_path = self.backup_dir / backup_name
+        if not backup_path.exists():
+            backup_path = self.backup_dir / f"{backup_name}.zip"
+
+        if not backup_path.exists():
+            print_status(f"Backup not found: {backup_name}", "error")
+            return False
+
+        try:
+            backup_path.unlink()
+            print_status(f"Deleted backup: {backup_path.name}", "success")
+            return True
+        except OSError as e:
+            print_status(f"Failed to delete backup: {e}", "error")
+            return False
+
+    def get_backup_stats(self) -> Dict[str, Any]:
+        """Get backup statistics."""
+        backups = self.list_backups()
+
+        total_size = sum(b["size"] for b in backups)
+        quick_backups = [b for b in backups if b["type"] == "quick"]
+        full_backups = [b for b in backups if b["type"] == "full"]
+
+        return {
+            "total_backups": len(backups),
+            "quick_backups": len(quick_backups),
+            "full_backups": len(full_backups),
+            "total_size": total_size,
+            "total_size_formatted": format_bytes(total_size),
+            "latest_backup": backups[0]["created"] if backups else None,
+            "backup_dir": str(self.backup_dir)
+        }
