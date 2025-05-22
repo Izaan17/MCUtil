@@ -1,4 +1,5 @@
 """Simple backup scheduler for MCUtil."""
+
 import signal
 import time
 from datetime import datetime
@@ -43,13 +44,19 @@ class BackupScheduler:
         # Main scheduler loop
         while self.running:
             try:
-                time.sleep(60)  # Check every minute
+                # Sleep in small chunks so we can respond to signals faster
+                for _ in range(60):  # 60 seconds total, 1-second chunks
+                    if not self.running:
+                        break
+                    time.sleep(1)
 
-                if self._should_backup():
+                if self.running and self._should_backup():
                     print_status("Time for scheduled backup", "info")
                     self._create_backup()
 
             except KeyboardInterrupt:
+                print_status("\nKeyboard interrupt received", "info")
+                self.running = False
                 break
 
         print_status("Backup scheduler stopped", "info")
@@ -121,11 +128,8 @@ if __name__ == "__main__":
         return True
     else:
         print_status("Failed to start backup scheduler", "error")
-        # Clean up a script
-        try:
-            script_path.unlink()
-        except FileNotFoundError:
-            pass
+        # Clean up the script
+        script_path.unlink(True)
         return False
 
 
@@ -144,11 +148,7 @@ def stop_scheduler():
 
         # Clean up the scheduler script
         script_path = Path(__file__).parent / "run_scheduler.py"
-        try:
-            if script_path.exists():
-                script_path.unlink()
-        except FileNotFoundError:
-            pass
+        script_path.unlink(True)
 
         return True
     else:
