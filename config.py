@@ -24,7 +24,7 @@ class Config:
         self.data = self._load_config()
 
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from file or create with defaults."""
+        """Load configuration from the file or create with defaults."""
         if not self.CONFIG_FILE.exists():
             return self.DEFAULTS.copy()
 
